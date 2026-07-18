@@ -1,23 +1,17 @@
 # Deterministic DF16/DF32 inference and attestation
-
 ## Main idea
+
 Indeterminism in LLMs—especially local, open-weight models—limits the range of applications in which their outputs can be trusted. A deterministic LLM combined with a fixed policy prompt could formally attest that a submitted input satisfies a defined policy.
 
-Such an attestation would reduce noise from invalid or low-value submissions while preserving meaningful input. By attaching proof that “this policy model approved this input,” users and policy makers could communicate through a shared, reproducible validation process.
+Such an attestation would reduce noise from invalid, inaccurate, or low-value submissions while preserving meaningful input. By attaching proof that “this policy model approved this input,” users and policy makers could communicate through a shared, reproducible validation process.
 
-Ordinary floating-point inference, however, may vary slightly across GPUs, compilers, kernel schedules, and reduction orders, making exact reproducibility difficult. This project adds deterministic fixed-point arithmetic to tinygrad so that the same model, prompt, and execution schema produce exactly the same integer values on every conforming backend.
+Ordinary floating-point inference may vary slightly across GPUs, compilers, kernel schedules, and reduction orders, making exact reproducibility difficult. This project adds deterministic fixed-point arithmetic to tinygrad so that the same model, prompt, and execution schema produce exactly the same output on every conforming device, independently of the underlying hardware.
 
-DF16 stores signed Q15.16 values in 32 bits. DF32 stores signed Q31.32 values in
-64 bits. Arithmetic, rounding, saturation, transcendental approximations, and
-reduction graphs are explicitly defined. CUDA may execute independent work in
-parallel, but operations whose order affects a result use a fixed dependency
-graph.
+This is achieved by representing floating-point values using integer arithmetic. DF16 stores signed Q15.16 values in 32 bits, while DF32 stores signed Q31.32 values in 64 bits. Arithmetic, rounding, saturation, transcendental approximations, and reduction graphs are explicitly defined, and all underlying operations are performed using integers. CUDA may still execute independent work in parallel, but operations whose order can affect the result use custom kernels with fixed dependency graphs.
 
-The attestation system commits selected intermediate tensors to SHA-256. Each
-layer has 5–10 meaningful witnesses, each token chains the ordered layer roots,
-and the final artifact binds the model weights, tokens, generated text, and
-complete execution transcript. This is a reproducibility proof, not proof of
-work or proof that a particular physical GPU was used.
+The attestation system provides evidence that a specific computation was executed. It commits selected intermediate tensors to SHA-256, with 5–10 meaningful witnesses per layer. Producing a valid attestation therefore requires reproducing the complete computation using the defined arithmetic and execution schema.
+
+Each token chains the ordered layer roots, and the final artifact binds the model weights, input tokens, generated text, and complete execution transcript into a final SHA-256 commitment. This is a reproducibility proof for a specific computation. 
 
 ## What is implemented
 
