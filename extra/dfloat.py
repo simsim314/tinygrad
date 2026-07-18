@@ -110,4 +110,6 @@ class DF16Embedding:
     if not dtypes.is_int(idx.dtype): raise TypeError(f"Expected integer dtype for index in embedding, got {idx.dtype}")
     # Inference embedding is a direct deterministic gather; a one-hot reduction
     # over the full vocabulary is unnecessary and obscures reduction semantics.
-    return self.weight[idx].cast(dtypes.df16)
+    # Cast before advanced indexing: tinygrad may lower a gather through a
+    # reduction, and that reduction must never occur in native FP16.
+    return self.weight.cast(dtypes.df16)[idx]
