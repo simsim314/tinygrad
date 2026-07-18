@@ -300,7 +300,9 @@ class RMSNorm:
   def _norm(self, x:Tensor) -> Tensor: return x * (x.square().mean(-1, keepdim=True) + self.eps).rsqrt()
 
   def __call__(self, x:Tensor) -> Tensor:
-    x = self._norm(x.float()).cast(x.dtype)
+    # Deterministic fixed point widens before squaring and narrows once after normalization.
+    work = x.cast(dtypes.df32) if x.dtype in dtypes.dfloats else x.float()
+    x = self._norm(work).cast(x.dtype)
     return x if self.weight is None else x * self.weight
 
 from tinygrad.uop.ops import UOp, KernelInfo, Ops, AxisType

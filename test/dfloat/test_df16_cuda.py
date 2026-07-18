@@ -1,5 +1,5 @@
 import os, unittest
-from tinygrad import Tensor, dtypes
+from tinygrad import Tensor, dtypes, nn
 from tinygrad.dtype import least_upper_dtype, sum_acc_dtype, to_storage_scalar
 
 DEVICE = os.getenv("DFLOAT_TEST_DEVICE", "CUDA")
@@ -9,6 +9,10 @@ def raw16(values, shape=None):
   return t.reshape(shape) if shape is not None else t
 
 def bits16(t): return t.bitcast(dtypes.int32).numpy().tolist()
+def raw32(values, shape=None):
+  t = Tensor(values, dtype=dtypes.int64, device=DEVICE).bitcast(dtypes.df32)
+  return t.reshape(shape) if shape is not None else t
+def bits32(t): return t.bitcast(dtypes.int64).numpy().tolist()
 
 class TestDFloatDType(unittest.TestCase):
   def test_layout_and_promotion(self):
@@ -37,6 +41,8 @@ class TestDFloatCUDA(unittest.TestCase):
 
   def test_sqrt(self):
     self.assertEqual(bits16(raw16([0,65536,262144,589824]).sqrt()), [0,65536,131072,196608])
+    expected=[0,4294967296,6074000999,8589934592,12884901888,199032864766430]
+    for _ in range(20): self.assertEqual(bits32(raw32([0,4294967296,8589934592,17179869184,38654705664,9223372036854775807]).sqrt()),expected)
 
   def test_exp2_raw_bits_and_repeatability(self):
     x=raw16([-131072,-65536,-32768,0,32768,65536,196608,917504])
@@ -52,5 +58,12 @@ class TestDFloatCUDA(unittest.TestCase):
     b=raw16([131072,65536,65536,-65536,32768,131072],(3,2))
     expected=[[229376,-196608],[294912,458752]]
     for _ in range(20): self.assertEqual(bits16(a@b), expected)
+
+  def test_rmsnorm_class_uses_df32_core(self):
+    norm=nn.RMSNorm(4,eps=1e-8)
+    norm.weight=raw16([65536]*4)
+    x=raw16([65536,131072,-65536,32768,98304,-32768,196608,65536],(2,4))
+    expected=[[52429,104858,-52429,26214],[55609,-18536,111218,37073]]
+    for _ in range(20): self.assertEqual(bits16(norm(x)),expected)
 
 if __name__ == "__main__": unittest.main()

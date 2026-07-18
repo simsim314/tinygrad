@@ -440,6 +440,7 @@ class CUDARenderer(CStyleLanguage):
     (UPat(Ops.FDIV, dtype=dtypes.df32, src=(UPat.var("a"), UPat.var("b"))), lambda ctx,a,b: f"df32_div({ctx[a]},{ctx[b]})"),
     (UPat(Ops.NEG, dtype=dtypes.df32, src=(UPat.var("a"),)), lambda ctx,a: f"df32_neg({ctx[a]})"),
     (UPat(Ops.RECIPROCAL, dtype=dtypes.df32, src=(UPat.var("a"),)), lambda ctx,a: f"df32_div(4294967296LL,{ctx[a]})"),
+    (UPat(Ops.SQRT, dtype=dtypes.df32, src=(UPat.var("a"),)), lambda ctx,a: f"df32_sqrt({ctx[a]})"),
     (UPat(Ops.MAX, dtype=dtypes.dfloats, src=(UPat.var("a"), UPat.var("b"))), lambda ctx,a,b: f"({ctx[a]}>{ctx[b]}?{ctx[a]}:{ctx[b]})"),
     (UPat(Ops.WHERE, dtype=dtypes.dfloats, src=(UPat.var("p"), UPat.var("a"), UPat.var("b"))), lambda ctx,p,a,b: f"({ctx[p]}?{ctx[a]}:{ctx[b]})"),
     (UPat(Ops.CAST, dtype=dtypes.df32, src=(UPat.var("a", dtypes.df16),)), lambda ctx,a: f"df16_to_df32({ctx[a]})"),
@@ -492,6 +493,10 @@ __device__ __forceinline__ df32 df32_div(df32 a,df32 b){
     if(rem>=ub){rem-=ub;if(i>=64)ov=true;else q|=1ULL<<i;}}
   if(ov||(!neg&&q>0x7fffffffffffffffULL)|| (neg&&q>0x8000000000000000ULL))return neg?(-9223372036854775807LL-1LL):9223372036854775807LL;
   return neg?(df32)(~q+1ULL):(df32)q;
+}
+__device__ __forceinline__ df32 df32_sqrt(df32 x){
+  if(x<=0)return 0;unsigned long long lo=0,hi=1ULL<<48,nh=((unsigned long long)x)>>32,nl=((unsigned long long)x)<<32;
+  while(lo+1<hi){unsigned long long m=lo+((hi-lo)>>1),pl=m*m,ph=__umul64hi(m,m);if(ph<nh||(ph==nh&&pl<=nl))lo=m;else hi=m;}return (df32)lo;
 }
 __device__ __forceinline__ df16 df16_sqrt(df16 x){if(x<=0)return 0;unsigned long long n=((unsigned long long)(unsigned int)x)<<16,r=0,b=1ULL<<62;while(b>n)b>>=2;while(b){if(n>=r+b){n-=r+b;r=(r>>1)+b;}else r>>=1;b>>=2;}return r>2147483647ULL?2147483647:(df16)r;}
 __device__ __constant__ df32 dft_exp_int[11]={4294967296LL,11674931555LL,31735754293LL,86266724208LL,234497268814LL,637429664642LL,1732713474316LL,4710003551159LL,12803117065094LL,34802480465680LL,94602950235158LL};
