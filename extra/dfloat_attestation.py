@@ -143,8 +143,9 @@ def weight_commitment(*, name:str, dtype:TensorDType, shape:Sequence[int],
 
 
 def ordered_root(domain:str, roots:Sequence[bytes]) -> bytes:
-  """Commit a small ordered root list with one framed SHA-256 invocation."""
-  return sha256_frame(domain, tuple(require_digest(x, f"root[{i}]") for i,x in enumerate(roots)))
+  """Commit a small fixed-width root list with one framed SHA-256 invocation."""
+  packed = _u32(len(roots)) + b"".join(require_digest(x, f"root[{i}]") for i,x in enumerate(roots))
+  return sha256_frame(domain, (packed,))
 
 
 def xor_roots(roots:Sequence[bytes]) -> bytes:

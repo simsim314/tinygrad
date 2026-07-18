@@ -63,6 +63,7 @@ class TestDFAttestationCore(unittest.TestCase):
   def test_ordered_and_xor_aggregates(self):
     roots=(hashlib.sha256(b"a").digest(),hashlib.sha256(b"b").digest())
     self.assertNotEqual(ordered_root("ORDER",roots),ordered_root("ORDER",roots[::-1]))
+    self.assertEqual(ordered_root("ORDER",roots),sha256_frame("ORDER",(struct.pack("<I",2)+b"".join(roots),)))
     self.assertEqual(xor_roots(roots),xor_roots(roots[::-1]))
     self.assertEqual(xor_roots((roots[0],roots[0])),ZERO_SHA256)
 

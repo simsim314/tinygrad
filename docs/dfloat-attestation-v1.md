@@ -189,8 +189,11 @@ Every variable-field SHA input uses the same unambiguous framing function:
 
 This is ordinary SHA-256 with domain separation and explicit length prefixes.
 It avoids ambiguity such as `(ab,c)` versus `(a,bc)`.  Small ordered root lists
-are concatenated through `FRAME` and hashed once; large tensors use the Merkle
-construction below so their data can be hashed in parallel.
+of fixed 32-byte SHA values are encoded as `count_u32_le || root_0 || root_1 ||
+...`, passed as one `FRAME` field, and hashed once.  Likewise four unsigned
+64-bit values are the 32 bytes `LE64(a) || LE64(b) || LE64(c) || LE64(d)`.
+Large tensors use the Merkle construction below so their data can be hashed in
+parallel.
 
 1. Split raw tensor data into fixed 4096-byte chunks.  An empty tensor has one
    zero-length chunk.
