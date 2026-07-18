@@ -1,6 +1,6 @@
 import hashlib, struct, unittest
 
-from extra.dfloat_attestation import (ModuleChain, TensorDType, TensorRole, boundary_root, canonical_json_bytes,
+from extra.dfloat_attestation import (AttestationRecorder, ModuleChain, TensorDType, TensorRole, boundary_root, canonical_json_bytes,
   canonical_tensor_header, document_root, ordered_root, sha256_frame, tensor_commitment, tensor_merkle_root, token_root,
   weight_commitment, xor_roots, ZERO_SHA256)
 from extra.dfloat_attestation_schema import (LlamaV1Config, attention_scores_plan, embedding_plan, llama_block_plan,
@@ -82,6 +82,13 @@ class TestDFAttestationCore(unittest.TestCase):
     with self.assertRaises(TypeError): canonical_json_bytes({"temperature":0.5})
     self.assertEqual(document_root({"a":1}),document_root({"a":1}))
     with self.assertRaises(ValueError): document_root({"document_sha256":"bad"})
+
+  def test_recorder_rejects_noncanonical_witness_order(self):
+    plan=embedding_plan("embed")
+    recorder=AttestationRecorder(0)
+    values={name:bytes([i]) for i,name in enumerate(reversed(plan.witnesses))}
+    with self.assertRaisesRegex(ValueError,"witness order mismatch"):
+      recorder.record_module(plan,values,input_names=("token_ids",),output_names=("embedding_output",))
 
 
 class TestDFAttestationSchema(unittest.TestCase):

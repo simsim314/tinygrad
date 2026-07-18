@@ -3,6 +3,10 @@ import math, unittest
 from tinygrad import Context, Tensor, dtypes
 from tinygrad.nn.state import get_state_dict, load_state_dict
 from extra.dfloat import convert_state_dict_df16, precompute_freqs_cis_df16
+from extra.dfloat_attestation import AttestationRecorder
+from extra.dfloat_attestation_schema import residual_plan
+from extra.dfloat_attestation_ops import attested_matmul, attested_rmsnorm, attested_softmax
+from extra.dfloat_attestation_schema import matmul_plan, rmsnorm_plan, softmax_plan
 from extra.models.llama import Transformer
 
 
@@ -76,6 +80,46 @@ class TestDFCPUCUDA(unittest.TestCase):
       return model.forward(tokens,0,math.nan,0,0.0,0.0,0.0).realize().bitcast(dtypes.int32).numpy().tolist()
 
     self.assertEqual(run("CPU"),run("CUDA"))
+
+  def test_same_tensor_witness_attestation(self):
+    raw=[-2147483648,-98304,-1,0,1,65536,98304,2147483647]
+    attestations=[]
+    for device in ("CPU","CUDA"):
+      left=df16_raw(raw,device)
+      right=df16_raw(list(reversed(raw)),device)
+      wide=left.cast(dtypes.df32)+right.cast(dtypes.df32)
+      mask=(wide > wide.const_like(2147483647<<16)).cast(dtypes.uint8)
+      out=(left+right).contiguous().realize()
+      values={"left_input":left,"right_input":right,"wide_sum":wide,"saturation_mask":mask,"df16_output":out}
+      recorder=AttestationRecorder(step=4)
+      recorder.record_module(residual_plan("layers.0.residual"),values,
+                             input_names=("left_input","right_input"),output_names=("df16_output",))
+      attestations.append(recorder.json())
+    self.assertEqual(attestations[0],attestations[1])
+
+  def test_witnessed_operations_match_and_attest(self):
+    results=[]
+    for device in ("CPU","CUDA"):
+      x=df16_raw([65536,-32768,98304,16384,-65536,131072,49152,-81920],device).reshape(2,4)
+      w=df16_raw([65536,32768,-65536,16384,49152,-32768,81920,65536,16384,98304,-49152,32768],device).reshape(3,4).T
+      mm_plan=matmul_plan("test.linear",4)
+      mm,mm_values=attested_matmul(x,w,mm_plan)
+      self.assertEqual(mm.bitcast(dtypes.int32).numpy().tolist(),x.dot(w).bitcast(dtypes.int32).numpy().tolist())
+      norm_plan=rmsnorm_plan("test.norm",3)
+      norm,norm_values=attested_rmsnorm(mm,df16_raw([65536,98304,32768],device),1e-5,norm_plan)
+      from tinygrad import nn
+      reference=nn.RMSNorm(3,1e-5)
+      reference.weight=df16_raw([65536,98304,32768],device)
+      self.assertEqual(norm.bitcast(dtypes.int32).numpy().tolist(),reference(mm).bitcast(dtypes.int32).numpy().tolist())
+      soft_plan=softmax_plan("test.softmax",3)
+      soft,soft_values=attested_softmax(norm,soft_plan)
+      self.assertEqual(soft.bitcast(dtypes.int32).numpy().tolist(),norm.softmax(-1).bitcast(dtypes.int32).numpy().tolist())
+      recorder=AttestationRecorder(2)
+      recorder.record_module(mm_plan,mm_values,input_names=("activation_input","weight_df16"),output_names=("output_df16",))
+      recorder.record_module(norm_plan,norm_values,input_names=("input_df16",),output_names=("norm_output_df16",))
+      recorder.record_module(soft_plan,soft_values,input_names=("scores_df16",),output_names=("probabilities_df16",))
+      results.append(recorder.json())
+    self.assertEqual(results[0],results[1])
 
 
 if __name__ == "__main__": unittest.main()

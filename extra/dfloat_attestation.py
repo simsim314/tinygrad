@@ -232,3 +232,117 @@ def canonical_json_bytes(value:Mapping[str, object]) -> bytes:
 def document_root(document:Mapping[str, object]) -> bytes:
   if "document_sha256" in document: raise ValueError("document_sha256 must be added only after hashing")
   return sha256_frame("DFAT-DOCUMENT-V1", (canonical_json_bytes(document),))
+
+
+def tensor_dtype_id(tensor) -> TensorDType:
+  """Map a tinygrad tensor dtype without importing tinygrad at module import time."""
+  from tinygrad import dtypes
+  mapping={dtypes.df16:TensorDType.DF16,dtypes.df32:TensorDType.DF32,dtypes.float16:TensorDType.FLOAT16,
+           dtypes.int32:TensorDType.INT32,dtypes.uint8:TensorDType.UINT8}
+  if tensor.dtype not in mapping: raise TypeError(f"attestation does not define canonical bytes for {tensor.dtype}")
+  return mapping[tensor.dtype]
+
+
+def tensor_raw_bytes(tensor) -> bytes:
+  """Copy a realized tinygrad tensor to canonical little-endian storage bytes."""
+  import sys
+  from tinygrad import dtypes
+  storage={dtypes.df16:dtypes.int32,dtypes.df32:dtypes.int64,dtypes.float16:dtypes.uint16,
+           dtypes.int32:dtypes.int32,dtypes.uint8:dtypes.uint8}
+  if tensor.dtype not in storage: raise TypeError(f"attestation does not define canonical bytes for {tensor.dtype}")
+  raw=tensor.bitcast(storage[tensor.dtype]).contiguous().realize().to("CPU").contiguous().realize().data().cast("B").tobytes()
+  itemsize=storage[tensor.dtype].itemsize
+  if sys.byteorder == "big" and itemsize > 1:
+    raw=b"".join(raw[i:i+itemsize][::-1] for i in range(0,len(raw),itemsize))
+  return raw
+
+
+@dataclass(frozen=True)
+class RootReference:
+  root: bytes
+
+  def __post_init__(self): require_digest(self.root,"referenced_root")
+
+
+@dataclass(frozen=True)
+class TensorRecord:
+  step: int
+  boundary: int
+  name: str
+  role: TensorRole
+  dtype: TensorDType|None
+  shape: tuple[int, ...]
+  root: bytes
+  referenced: bool = False
+
+  def json(self) -> dict[str, object]:
+    return {"step":self.step,"boundary":self.boundary,"name":self.name,"role":int(self.role),
+            "dtype":None if self.dtype is None else int(self.dtype),"shape":list(self.shape),
+            "root":self.root.hex(),"referenced":self.referenced}
+
+
+@dataclass(frozen=True)
+class ModuleRecord:
+  step: int
+  boundary: int
+  name: str
+  kind: str
+  witnesses: tuple[WitnessRecord, ...]
+  input_roots: tuple[bytes, ...]
+  output_roots: tuple[bytes, ...]
+  module_root: bytes
+  boundary_root: bytes
+
+  def json(self) -> dict[str, object]:
+    return {"step":self.step,"boundary":self.boundary,"name":self.name,"kind":self.kind,
+            "input_roots":[x.hex() for x in self.input_roots],"output_roots":[x.hex() for x in self.output_roots],
+            "witnesses":[x.json() for x in self.witnesses],"module_root":self.module_root.hex(),
+            "boundary_root":self.boundary_root.hex()}
+
+
+class AttestationRecorder:
+  """Correctness-first recorder; accelerator hashers can replace only commit_tensor."""
+  def __init__(self, step:int):
+    self.step, self._tensor_index = step, 0
+    self.tensors:list[TensorRecord]=[]
+    self.modules:list[ModuleRecord]=[]
+
+  def commit_tensor(self, name:str, value, role:TensorRole=TensorRole.STATE) -> bytes:
+    index=self._tensor_index
+    self._tensor_index += 1
+    if isinstance(value,RootReference):
+      record=TensorRecord(self.step,index,unicodedata.normalize("NFC",name),role,None,(),value.root,True)
+    elif isinstance(value,(bytes,bytearray,memoryview)):
+      raw=bytes(value)
+      root=tensor_commitment(step=self.step,boundary=index,role=role,name=name,dtype=TensorDType.UINT8,shape=(len(raw),),data=raw)
+      record=TensorRecord(self.step,index,unicodedata.normalize("NFC",name),role,TensorDType.UINT8,(len(raw),),root)
+    else:
+      dtype,raw=tensor_dtype_id(value),tensor_raw_bytes(value)
+      shape=tuple(int(x) for x in value.shape)
+      root=tensor_commitment(step=self.step,boundary=index,role=role,name=name,dtype=dtype,shape=shape,data=raw)
+      record=TensorRecord(self.step,index,unicodedata.normalize("NFC",name),role,dtype,shape,root)
+    self.tensors.append(record)
+    return record.root
+
+  def record_module(self, plan, values:Mapping[str, object], *, input_names:Sequence[str], output_names:Sequence[str]) -> ModuleRecord:
+    expected=plan.witnesses
+    if tuple(values.keys()) != expected:
+      raise ValueError(f"{plan.name} witness order mismatch: expected {expected}, got {tuple(values.keys())}")
+    if any(x not in values for x in (*input_names,*output_names)): raise ValueError("module input/output name is not a witness")
+    roots={name:self.commit_tensor(f"{plan.name}.{name}",value) for name,value in values.items()}
+    inputs=tuple(roots[x] for x in input_names)
+    outputs=tuple(roots[x] for x in output_names)
+    chain=ModuleChain(self.step,plan.name,plan.spec_root,inputs)
+    for name in expected: chain.add(name,roots[name])
+    module_digest=chain.finish(outputs)
+    bindex=len(self.modules)
+    bdigest=boundary_root(index=bindex,name=plan.name,input_roots=inputs,witness_roots=tuple(roots.values()),output_root=module_digest)
+    record=ModuleRecord(self.step,bindex,plan.name,plan.kind,tuple(chain.witnesses),inputs,outputs,module_digest,bdigest)
+    self.modules.append(record)
+    return record
+
+  def json(self) -> dict[str, object]:
+    boundaries=tuple(x.boundary_root for x in self.modules)
+    return {"step":self.step,"tensors":[x.json() for x in self.tensors],"modules":[x.json() for x in self.modules],
+            "ordered_boundary_root":ordered_root("DFAT-ORDERED-BOUNDARIES-V1",boundaries).hex(),
+            "boundary_xor":xor_roots(boundaries).hex()}
