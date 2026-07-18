@@ -1,6 +1,7 @@
 <h1 align="center">Deterministic DF16/DF32 inference and attestation</h1>
 
 <p align="center"><img src="attestation.png" alt="Deterministic LLM attestation process" width="500"></p>
+<p align="center"><img src="determinism.png" alt="Deterministic LLM attestation process" width="500"></p>
 
 ## Main idea
 
