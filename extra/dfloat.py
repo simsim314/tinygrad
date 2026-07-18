@@ -94,6 +94,6 @@ class DF16Embedding:
     self.weight=Tensor.glorot_uniform(vocab_size,embed_size).cast(storage_dtype)
   def __call__(self,idx:Tensor)->Tensor:
     if not dtypes.is_int(idx.dtype): raise TypeError(f"Expected integer dtype for index in embedding, got {idx.dtype}")
-    arange=Tensor.arange(self.weight.shape[0])
-    selected=(arange==idx.unsqueeze(-1)).unsqueeze(-1).where(self.weight,0).sum(-2,dtype=self.weight.dtype)
-    return selected.cast(dtypes.df16)
+    # Inference embedding is a direct deterministic gather; a one-hot reduction
+    # over the full vocabulary is unnecessary and obscures reduction semantics.
+    return self.weight[idx].cast(dtypes.df16)

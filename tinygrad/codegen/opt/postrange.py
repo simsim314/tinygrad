@@ -337,6 +337,12 @@ def apply_opts(ast:UOp, ren:Renderer, beam:int=0) -> UOp:
   if ast.tag is not None: return ast
   k = Scheduler(ast, ren)
   k.convert_loop_to_global()
+  # Saturating fixed-point addition is not associative.  GROUP/UNROLL/TC,
+  # explicit opts, and beam-selected opts can all reassociate a reduction into
+  # partial sums.  DF reductions are therefore a canonical increasing-index
+  # loop in one work-item per output.  Independent outputs remain parallel.
+  if k.reduceop is not None and k.reduceop.dtype.scalar() in dtypes.dfloats:
+    return k.get_optimized_ast(name_override=ast.arg.name if ast.arg is not None and ast.arg.name != "test" else None)
   if ast.arg is not None and ast.arg.opts_to_apply is not None:
     for opt in ast.arg.opts_to_apply: k.apply_opt(opt)
   elif beam >= 1:

@@ -103,14 +103,14 @@ pm_reduce_collapse = pm_reduce_unparented + PatternMatcher([
     (UPat(Ops.RANGE, name="r") < UPat.var("lower")).where(0, UPat.var("val")),
     ((UPat.var("r")<UPat.var("lower")).logical_not()&(UPat(Ops.RANGE, name="r")<UPat.var("upper"))).where(UPat.var("val"), 0),
   ).reduce(UPat.var("r"), arg=Ops.ADD), lambda r,val,lower=None,upper=None:
-    ((upper.minimum(r.src[0]) if upper is not None else r.src[0]) -
+    None if val.dtype.scalar() in dtypes.dfloats else ((upper.minimum(r.src[0]) if upper is not None else r.src[0]) -
      (lower.maximum(0) if lower is not None else r.const_like(0))).maximum(0).minimum(r.src[0]).cast(val.dtype) * val if no_range(val) else None),
   # REDUCE on ADD
   ((UPat.var("x")+UPat.var("y")).reduce(arg=Ops.ADD, allow_any_len=True, name="r"),
-   lambda x,y,r: x.reduce(*r.src[1:], arg=Ops.ADD) + y.reduce(*r.src[1:],arg=Ops.ADD)),
+   lambda x,y,r: None if r.dtype.scalar() in dtypes.dfloats else x.reduce(*r.src[1:], arg=Ops.ADD) + y.reduce(*r.src[1:],arg=Ops.ADD)),
   # AND on WHERE
   ((UPat(Ops.PARAM, name="x") & UPat.var("y")).where(UPat.var("c"), 0).reduce(arg=Ops.ADD, allow_any_len=True, name="r"),
-    lambda x,y,c,r: y.where(c, 0).reduce(*r.src[1:], arg=Ops.ADD)*x.cast(c.dtype)),
+    lambda x,y,c,r: None if r.dtype.scalar() in dtypes.dfloats else y.where(c, 0).reduce(*r.src[1:], arg=Ops.ADD)*x.cast(c.dtype)),
   # MUL casted bool
   ((UPat.var("x") * UPat.var("gate", dtype=dtypes.bool).cast()), lambda x,gate: gate.where(x, 0)),
 ])+symbolic
@@ -147,7 +147,8 @@ pm_reduce_simplify = pm_reduce_unparented + PatternMatcher([
 # remove REDUCE on load, comes from indexing a tensor with another tensor
 def no_load(u:UOp) -> bool: return not any(x.op is Ops.INDEX for x in u.backward_slice_with_self)
 pm_load_collapse = PatternMatcher([
-  (UPat(Ops.REDUCE, arg=(Ops.ADD, 0), src=(UPat.var("u"), UPat()), name="red"), reduce_load_collapse),
+  (UPat(Ops.REDUCE, arg=(Ops.ADD, 0), src=(UPat.var("u"), UPat()), name="red"),
+   lambda red,u: None if red.dtype.scalar() in dtypes.dfloats else reduce_load_collapse(red,u)),
   # we want to make sure we dont do math on a loaded index since that can cause overflow, this undoes the rule in pm_reduce_load_collapse
   ((UPat.var("x", dtypes.index)+UPat.var("y"))<UPat.var("c"), lambda x,y,c: x < c-y if no_load(y) and no_load(c) and not no_load(x) else None),
 ])

@@ -31,6 +31,9 @@ def const_arg(u:UOp) -> ConstType|tuple[ConstType, ...]|None:
   return None
 
 def fold_const_alu(a:UOp) -> UOp|None:
+  # Generic host arithmetic does not implement DF saturation, rounding, lookup
+  # tables, or division semantics.  Keep DF constants in the target graph.
+  if a.dtype.scalar() in dtypes.dfloats: return None
   vals = [const_arg(s) for s in a.src]
   return None if any(v is None for v in vals) else a.const_like(exec_alu(a.op, a.dtype, vals, False))
 
@@ -362,6 +365,7 @@ def simplify_valid(valid:UOp) -> UOp|None:
 # ******** phase 3 is the complete symbolic ********
 
 def reduce_mul_chain(r:UOp) -> UOp|None:
+  if r.dtype.scalar() in dtypes.dfloats: return None
   if r.arg[0] not in {Ops.ADD, Ops.MAX}: return None
   if r.dtype != r.src[0].dtype: return None
   inside, outside = [], []
@@ -457,7 +461,8 @@ sym = symbolic+pm_simplify_valid+PatternMatcher([
   (UPat.var("x") * ((1+UPat.var("x")).reciprocal().named("d")*UPat.var("y")), lambda x,y,d: y*(1-d)),
   (UPat.var("x") * ((1+UPat.var("x")).reciprocal().named("d")+UPat.var("y")), lambda x,y,d: (1-d)+x*y),
   # move const multiply after REDUCE (NOTE: the mul chain can do this, but only if it's a same dtype reduce)
-  ((UPat.var("x")*UPat.cvar("c")).reduce(arg=Ops.ADD, name="r", allow_any_len=True), lambda x,c,r: r.replace(src=(x,)+r.src[1:])*c.arg),
+  ((UPat.var("x")*UPat.cvar("c")).reduce(arg=Ops.ADD, name="r", allow_any_len=True),
+   lambda x,c,r: None if r.dtype.scalar() in dtypes.dfloats else r.replace(src=(x,)+r.src[1:])*c.arg),
   # reduce mul chain, move muls after the reduce
   (UPat(Ops.MUL).reduce(name="r", allow_any_len=True), reduce_mul_chain),
   # ** combine terms (opinionated) **

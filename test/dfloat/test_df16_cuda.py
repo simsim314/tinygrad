@@ -1,5 +1,5 @@
 import os, unittest
-from tinygrad import Tensor, dtypes, nn
+from tinygrad import Tensor, dtypes, nn, Context
 from tinygrad.dtype import least_upper_dtype, sum_acc_dtype, to_storage_scalar
 
 DEVICE = os.getenv("DFLOAT_TEST_DEVICE", "CUDA")
@@ -64,6 +64,25 @@ class TestDFloatCUDA(unittest.TestCase):
     b=raw16([131072,65536,65536,-65536,32768,131072],(3,2))
     expected=[[229376,-196608],[294912,458752]]
     for _ in range(20): self.assertEqual(bits16(a@b), expected)
+
+  def test_saturating_sum_uses_canonical_adjacent_pair_tree(self):
+    # A four-value serial chunk returns 0.  The specified adjacent-pair tree is
+    # sat(sat(MAX+MAX) + sat(MAX-MAX)) == MAX.
+    values=[0]*64
+    values[:4]=[9223372036854775807]*3+[-9223372036854775807]
+    x=raw32(values)
+    for _ in range(20): self.assertEqual(bits32(x.sum()),9223372036854775807)
+    # Beam search must not be allowed to override deterministic reduction order.
+    with Context(BEAM=2): self.assertEqual(bits32(raw32(values).sum()),9223372036854775807)
+
+  def test_saturating_wide_dot_uses_canonical_tree(self):
+    # Products are all formed before the fixed adjacent-pair reduction stages.
+    m=2147483647
+    a,b=[0]*64,[0]*64
+    a[:4],b[:4]=[m,m,m,-m],[m,m,m,m]
+    lhs,rhs=raw16(a,(1,64)),raw16(b,(64,1))
+    expected=9223372028264841218
+    for _ in range(20): self.assertEqual(bits32(lhs.matmul(rhs,dtype=dtypes.df32)),[[expected]])
 
   def test_rmsnorm_class_uses_df32_core(self):
     norm=nn.RMSNorm(4,eps=1e-8)
