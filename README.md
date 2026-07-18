@@ -21,6 +21,11 @@ tinygrad: For something between [PyTorch](https://github.com/pytorch/pytorch) an
 
 ---
 
+> This fork contains the deterministic DF16/DF32 inference and computation-attestation project.
+> See [README.dfloat.md](README.dfloat.md) for the design, current status, tests, and usage.
+
+---
+
 tinygrad is an end-to-end deep learning stack:
 
 - **Tensor library** with autograd

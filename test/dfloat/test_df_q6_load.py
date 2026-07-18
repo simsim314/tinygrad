@@ -2,10 +2,31 @@ import hashlib, unittest
 import numpy as np
 
 from tinygrad import Tensor, dtypes
-from tinygrad.llm.gguf import _fp16_times_int_to_fp16_bits, ggml_data_to_tensor
+from tinygrad.llm.gguf import _float32_to_fp16_bits, _fp16_times_int_to_fp16_bits, ggml_data_to_tensor
 
 
 class TestDeterministicQ6Load(unittest.TestCase):
+  def test_integer_float32_to_fp16_matches_reference(self):
+    rng=np.random.default_rng(789)
+    source=rng.integers(0,2**32,100000,dtype=np.uint32)
+    got=_float32_to_fp16_bits(Tensor(source)).numpy()
+    with np.errstate(over="ignore",invalid="ignore"):
+      reference=source.view(np.float32).astype(np.float16).view(np.uint16)
+    finite_nonzero=(((source >> 23) & 0xff) != 0xff) & ((source & 0x7fffffff) != 0)
+    np.testing.assert_equal(got[finite_nonzero],reference[finite_nonzero])
+    special=np.array([0,0x80000000,0x7f800000,0xff800000,0x7fc00001,1,0x33800000,0x33000000],dtype=np.uint32)
+    np.testing.assert_equal(_float32_to_fp16_bits(Tensor(special)).numpy(),
+                            np.array([0,0,0x7c00,0xfc00,0x7e00,0,1,0],dtype=np.uint16))
+
+  def test_float32_loader_decodes_on_cpu_then_uploads_fp16(self):
+    source=np.array([0x3f800000,0xbf800000,0x33800000,0x33000000,0x477fe000,0x80000000],dtype=np.uint32)
+    raw=Tensor(source.view(np.uint8),dtype=dtypes.uint8,device="CPU")
+    decoded=ggml_data_to_tensor(raw,len(source),0,deterministic_f32_fp16=True).contiguous().realize()
+    self.assertEqual(decoded.dtype,dtypes.float16)
+    expected=np.array([0x3c00,0xbc00,0x0001,0x0000,0x7bff,0x0000],dtype=np.uint16)
+    np.testing.assert_equal(decoded.bitcast(dtypes.uint16).numpy(),expected)
+    np.testing.assert_equal(decoded.to("CUDA").bitcast(dtypes.uint16).numpy(),expected)
+
   def test_integer_fp16_multiplier_matches_reference(self):
     rng=np.random.default_rng(123)
     finite=rng.integers(0,0x7c00,20000,dtype=np.uint16)

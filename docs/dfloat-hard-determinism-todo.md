@@ -8,6 +8,10 @@ bytes, and SHA-256 digests must match before execution attestations can be
 compared.  All FP16-to-DF conversion and subsequent model arithmetic must use
 the deterministic integer implementation.
 
+For the Llama-3.2-1B Q6_K proof model, both Q6_K matrices and native F32 norm
+vectors are now converted on CPU to canonical FP16 with integer-only IEEE bit
+decoding and explicit round-to-nearest, ties-to-even before upload.
+
 ## Required before GGUF-level cross-machine claims
 
 - Q6_K is implemented for the DF Llama loader as integer-only decode directly

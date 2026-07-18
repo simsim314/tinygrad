@@ -21,3 +21,9 @@ The conversion has these canonical edge rules:
 The ordinary GGUF loader retains its existing dequantization behavior. The
 integer decoder is selected explicitly by the DF Llama loader, which also
 forces GGUF decoding onto CPU before the byte-preserving device upload.
+
+The same DF loader converts native F32 tensors directly from their IEEE-754 raw
+bits to canonical FP16 with integer-only round-to-nearest, ties-to-even. Exact
+zero is canonicalized to `0x0000`, overflow becomes signed infinity, and NaNs
+become `0x7e00`. This covers the model's norm vectors without a native float
+cast; all persistent tensors uploaded by this model path therefore use FP16.

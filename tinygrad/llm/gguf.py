@@ -20,25 +20,16 @@ _GGML_NATIVE = {0: dtypes.float32, 1: dtypes.float16, 24: dtypes.int8, 25: dtype
 _GGML_QUANT = {2:(32,18), 3:(32,20), 6:(32,22), 7:(32,24), 8:(32,34),
                12:(256,144), 13:(256,176), 14:(256,210), 18:(256,98), 21:(256,110), 22:(256,82), 23:(256,136), 39:(32,17), 41:(128,18)}
 
-def _fp16_times_int_to_fp16_bits(scale_bits:Tensor, multiplier:Tensor) -> Tensor:
-  """Exact binary16 times signed integer, rounded once to binary16 (RNE), using integer operations only."""
-  scale=scale_bits.cast(dtypes.uint32)
-  mul=multiplier.cast(dtypes.int32)
-  sign=scale.rshift(15).bitwise_and(1).bitwise_xor((mul < 0).cast(dtypes.uint32))
-  exponent=scale.rshift(10).bitwise_and(0x1f)
-  fraction=scale.bitwise_and(0x3ff)
-  magnitude=(mul < 0).where(-mul,mul).cast(dtypes.uint32)
-  significand=(exponent == 0).where(fraction,fraction+1024)
-  product=significand*magnitude
-  binary_exponent=(exponent == 0).where(-24,exponent.cast(dtypes.int32)-25)
-
-  # Fixed unsigned binary search for floor(log2(product))+1.  The Q6_K bound is below 2**24.
-  reduced,bit_length=product,product.const_like(0).cast(dtypes.int32)
+def _exact_binary_to_fp16_bits(sign:Tensor,significand:Tensor,binary_exponent:Tensor) -> Tensor:
+  """Round sign*significand*2**binary_exponent to canonical binary16 using only integer operations."""
+  significand=significand.cast(dtypes.uint32)
+  # Fixed unsigned binary search for floor(log2(significand))+1. Inputs are below 2**24.
+  reduced,bit_length=significand,significand.const_like(0).cast(dtypes.int32)
   for shift in (16,8,4,2,1):
     upper=reduced >= (1 << shift)
     reduced=upper.where(reduced.rshift(shift),reduced)
     bit_length=bit_length+upper.cast(dtypes.int32)*shift
-  bit_length=bit_length+(product != 0).cast(dtypes.int32)
+  bit_length=bit_length+(significand != 0).cast(dtypes.int32)
 
   def round_shift_even(value:Tensor, shift:Tensor) -> Tensor:
     safe=shift.clip(0,31).cast(dtypes.uint32)
@@ -49,27 +40,55 @@ def _fp16_times_int_to_fp16_bits(scale_bits:Tensor, multiplier:Tensor) -> Tensor
     increment=(shift > 0).bitwise_and((remainder > half).bitwise_or((remainder == half).bitwise_and(quotient.bitwise_and(1) != 0)))
     rounded_right=quotient+increment.cast(dtypes.uint32)
     rounded_left=value.lshift((-shift).clip(0,31).cast(dtypes.uint32))
-    return (shift > 0).where(rounded_right,rounded_left)
+    rounded=(shift > 0).where(rounded_right,rounded_left)
+    return (shift > 31).where(rounded.const_like(0),rounded)
 
   unbiased=bit_length-1+binary_exponent
-  normal_sig=round_shift_even(product,bit_length-11)
+  normal_sig=round_shift_even(significand,bit_length-11)
   carry=normal_sig >= 2048
   normal_sig=carry.where(normal_sig.rshift(1),normal_sig)
   normal_exp=unbiased+carry.cast(dtypes.int32)+15
   normal_bits=(normal_exp.cast(dtypes.uint32).lshift(10)).bitwise_or(normal_sig-1024)
   normal_bits=(normal_exp > 30).where(normal_bits.const_like(0x7c00),normal_bits)
 
-  sub_sig=round_shift_even(product,-(binary_exponent+24))
+  sub_sig=round_shift_even(significand,-(binary_exponent+24))
   sub_bits=(sub_sig >= 1024).where(sub_sig.const_like(0x0400),sub_sig)
-  finite=(unbiased >= -14).where(normal_bits,sub_bits).bitwise_or(sign.lshift(15))
-  finite=(product == 0).where(finite.const_like(0),finite)  # canonical Q6 exact zero is always +0
+  finite=(unbiased >= -14).where(normal_bits,sub_bits).bitwise_or(sign.cast(dtypes.uint32).lshift(15))
+  return (significand == 0).where(finite.const_like(0),finite)  # canonical exact zero is always +0
+
+
+def _fp16_times_int_to_fp16_bits(scale_bits:Tensor, multiplier:Tensor) -> Tensor:
+  """Exact binary16 times signed integer, rounded once to binary16 (RNE), using integer operations only."""
+  scale=scale_bits.cast(dtypes.uint32)
+  mul=multiplier.cast(dtypes.int32)
+  sign=scale.rshift(15).bitwise_and(1).bitwise_xor((mul < 0).cast(dtypes.uint32))
+  exponent=scale.rshift(10).bitwise_and(0x1f)
+  fraction=scale.bitwise_and(0x3ff)
+  magnitude=(mul < 0).where(-mul,mul).cast(dtypes.uint32)
+  significand=(exponent == 0).where(fraction,fraction+1024)*magnitude
+  binary_exponent=(exponent == 0).where(-24,exponent.cast(dtypes.int32)-25)
+  finite=_exact_binary_to_fp16_bits(sign,significand,binary_exponent)
 
   special=(fraction != 0).where(finite.const_like(0x7e00),
     (magnitude == 0).where(finite.const_like(0x7e00),finite.const_like(0x7c00).bitwise_or(sign.lshift(15))))
   return (exponent == 0x1f).where(special,finite).cast(dtypes.uint16)
 
 
-def ggml_data_to_tensor(t: Tensor, n: int, ggml_type: int, *, deterministic_q6_fp16:bool=False) -> Tensor:
+def _float32_to_fp16_bits(source_bits:Tensor) -> Tensor:
+  """Canonical IEEE binary32 to binary16 RNE conversion without native floating-point operations."""
+  source=source_bits.cast(dtypes.uint32)
+  sign=source.rshift(31)
+  exponent=source.rshift(23).bitwise_and(0xff)
+  fraction=source.bitwise_and(0x7fffff)
+  significand=(exponent == 0).where(fraction,fraction+0x800000)
+  binary_exponent=(exponent == 0).where(-149,exponent.cast(dtypes.int32)-150)
+  finite=_exact_binary_to_fp16_bits(sign,significand,binary_exponent)
+  special=(fraction != 0).where(finite.const_like(0x7e00),finite.const_like(0x7c00).bitwise_or(sign.lshift(15)))
+  return (exponent == 0xff).where(special,finite).cast(dtypes.uint16)
+
+
+def ggml_data_to_tensor(t: Tensor, n: int, ggml_type: int, *, deterministic_q6_fp16:bool=False,
+                        deterministic_f32_fp16:bool=False) -> Tensor:
   """
   Converts ggml tensor data to a tinygrad tensor.
 
@@ -81,6 +100,8 @@ def ggml_data_to_tensor(t: Tensor, n: int, ggml_type: int, *, deterministic_q6_f
   """
   # https://github.com/ggerganov/ggml/blob/323951f1bdcdfbd5b5ff3a9a7c3770e63b1a560e/include/ggml.h#L356
 
+  if ggml_type == 0 and deterministic_f32_fp16:
+    return _float32_to_fp16_bits(t[:4*n].contiguous().bitcast(dtypes.uint32)).bitcast(dtypes.float16)
   if (dtype := _GGML_NATIVE.get(ggml_type)) is not None:
     return t[:dtype.itemsize * n].contiguous().bitcast(dtype)
 
@@ -182,7 +203,7 @@ readers: dict[int, Callable[[io.BufferedIOBase], Any]] = { 8: read_str, 9: read_
     [ (0,"c",1), (1,"b",1), (2,"H",2), (3,"h",2), (4,"I",4), (5,"i",4), (6,"f",4), (7,"?",1), (10,"Q",8), (11,"q",8), (12,"d",8) ] } }
 read_uint32, read_int32, read_uint64, read_int64 = readers[4], readers[5], readers[10], readers[11]
 
-def _gguf_parse(tensor: Tensor, *, deterministic_q6_fp16:bool=False) -> tuple[dict, dict[str, Tensor]]:
+def _gguf_parse(tensor: Tensor, *, deterministic_q6_fp16:bool=False, deterministic_f32_fp16:bool=False) -> tuple[dict, dict[str, Tensor]]:
   # TODO: remove the need for copy to default device
   tensor = tensor.to(None).realize()
   r = io.BufferedReader(TensorIO(tensor), 1_000_000)
@@ -199,7 +220,8 @@ def _gguf_parse(tensor: Tensor, *, deterministic_q6_fp16:bool=False) -> tuple[di
   data_start = round_up(pos, alignment)
 
   state_dict = {name: ggml_data_to_tensor(tensor[data_start + off:],prod(dims),typ,
-    deterministic_q6_fp16=deterministic_q6_fp16).reshape(*reversed(dims)) for name,dims,typ,off in t_infos}
+    deterministic_q6_fp16=deterministic_q6_fp16,deterministic_f32_fp16=deterministic_f32_fp16
+    ).reshape(*reversed(dims)) for name,dims,typ,off in t_infos}
   return kv_data, state_dict
 
 def _gguf_split_paths(path: pathlib.Path, kv: dict) -> list[pathlib.Path]:
@@ -208,7 +230,8 @@ def _gguf_split_paths(path: pathlib.Path, kv: dict) -> list[pathlib.Path]:
   if not (m := re.match(r"^(.*)-00001-of-\d{5}\.gguf$", str(path))): raise ValueError(f"first split path must end with -00001-of-NNNNN.gguf: {path}")
   return [pathlib.Path(f"{m.group(1)}-{i:05d}-of-{total:05d}.gguf") for i in range(1, total+1)]
 
-def gguf_load(fn: Tensor|str|pathlib.Path, *, deterministic_q6_fp16:bool=False) -> tuple[dict, dict[str, Tensor]]:
+def gguf_load(fn: Tensor|str|pathlib.Path, *, deterministic_q6_fp16:bool=False,
+              deterministic_f32_fp16:bool=False) -> tuple[dict, dict[str, Tensor]]:
   """
   Loads a .gguf file, returning the `kv_data` and `state_dict`. Multi-part splits are auto-merged when loaded by path.
 
@@ -223,8 +246,10 @@ def gguf_load(fn: Tensor|str|pathlib.Path, *, deterministic_q6_fp16:bool=False) 
 
   NOTE: The provided tensor must be on a device that supports execution.
   """
-  kv, sd = _gguf_parse(fn if isinstance(fn, Tensor) else Tensor(pathlib.Path(fn)),deterministic_q6_fp16=deterministic_q6_fp16)
+  kv, sd = _gguf_parse(fn if isinstance(fn, Tensor) else Tensor(pathlib.Path(fn)),deterministic_q6_fp16=deterministic_q6_fp16,
+                       deterministic_f32_fp16=deterministic_f32_fp16)
   if kv.get('split.count', 1) <= 1: return kv, sd
   if isinstance(fn, Tensor): raise ValueError("multi-part GGUF requires a path argument (got Tensor)")
-  for pp in _gguf_split_paths(pathlib.Path(fn), kv)[1:]: sd.update(_gguf_parse(Tensor(pp),deterministic_q6_fp16=deterministic_q6_fp16)[1])
+  for pp in _gguf_split_paths(pathlib.Path(fn), kv)[1:]: sd.update(_gguf_parse(Tensor(pp),deterministic_q6_fp16=deterministic_q6_fp16,
+    deterministic_f32_fp16=deterministic_f32_fp16)[1])
   return kv, sd
