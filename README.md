@@ -13,9 +13,9 @@ Ordinary floating-point inference may vary slightly across GPUs, compilers, kern
 
 This is achieved by representing floating-point values using integer arithmetic. DF16 stores signed Q15.16 values in 32 bits, while DF32 stores signed Q31.32 values in 64 bits. Arithmetic, rounding, saturation, transcendental approximations, and reduction graphs are explicitly defined, and all underlying operations are performed using integers. CUDA may still execute independent work in parallel, but operations whose order can affect the result use custom kernels with fixed dependency graphs.
 
-The attestation system provides evidence that a specific computation was executed. It commits selected intermediate tensors to SHA-256, with 5–10 meaningful witnesses per layer. Producing a valid attestation therefore requires reproducing the complete computation using the defined arithmetic and execution schema.
+The attestation system provides evidence that a specific computation was executed. It commits selected intermediate tensors to SHA-256, with witness per layer. Producing a valid attestation therefore requires reproducing the complete computation using the defined arithmetic and execution schema, any attempt to "cheat" might generate similiar output but not the attestation. 
 
-Each token chains the ordered layer roots, and the final artifact binds the model weights, input tokens, generated text, and complete execution transcript into a final SHA-256 commitment. This is a reproducibility proof for a specific computation. 
+Each token chains the ordered layer roots, and the final artifact binds the model weights, input tokens, generated text, and complete execution transcript into a final SHA-256 commitment. This is a reproducibility proof for a specific computation, used to produce llm output.
 
 ## What is implemented
 
