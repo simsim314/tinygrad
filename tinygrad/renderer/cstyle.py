@@ -280,6 +280,30 @@ static inline df32 df32_sqrt(df32 x){
   while(lo+1<hi){unsigned long long m=lo+((hi-lo)>>1);if((unsigned __int128)m*m<=n)lo=m;else hi=m;}return (df32)lo;
 }
 static inline df16 df16_sqrt(df16 x){if(x<=0)return 0;unsigned long long n=((unsigned long long)(unsigned int)x)<<16,r=0,b=1ULL<<62;while(b>n)b>>=2;while(b){if(n>=r+b){n-=r+b;r=(r>>1)+b;}else r>>=1;b>>=2;}return r>2147483647ULL?2147483647:(df16)r;}
+static const df32 dft_exp_int[11]={4294967296LL,11674931555LL,31735754293LL,86266724208LL,234497268814LL,637429664642LL,1732713474316LL,4710003551159LL,12803117065094LL,34802480465680LL,94602950235158LL};
+static const df32 dft_exp_f0[16]={4294967296LL,4571968888LL,4866835547LL,5180719473LL,5514847172LL,5870524256LL,6249140542LL,6652175480LL,7081203938LL,7537902354LL,8024055288LL,8541562392LL,9092445837LL,9678858211LL,10303090935LL,10967583210LL};
+static const df32 dft_exp_f1[16]={4294967296LL,4311777323LL,4328653142LL,4345595011LL,4362603189LL,4379677935LL,4396819510LL,4414028175LL,4431304193LL,4448647827LL,4466059343LL,4483539005LL,4501087080LL,4518703837LL,4536389544LL,4554144470LL};
+static const df32 dft_exp_f2[16]={4294967296LL,4296016000LL,4297064960LL,4298114176LL,4299163649LL,4300213377LL,4301263362LL,4302313604LL,4303364101LL,4304414856LL,4305465866LL,4306517134LL,4307568658LL,4308620439LL,4309672477LL,4310724771LL};
+static const df32 dft_exp_f3[16]={4294967296LL,4295032833LL,4295098370LL,4295163909LL,4295229448LL,4295294989LL,4295360530LL,4295426073LL,4295491616LL,4295557161LL,4295622706LL,4295688253LL,4295753800LL,4295819349LL,4295884898LL,4295950449LL};
+static const df32 dft32_exp_int[17]={4294967296LL,11674931555LL,31735754293LL,86266724208LL,234497268814LL,637429664642LL,1732713474316LL,4710003551159LL,12803117065094LL,34802480465680LL,94602950235158LL,257157480542844LL,699026506411923LL,1900151049990741LL,5165146070517208LL,14040322704823566LL,38165554074222848LL};
+static const df32 dft32_exp_f0[16]={4294967296LL,4571968888LL,4866835547LL,5180719473LL,5514847172LL,5870523573LL,6249135400LL,6652155197LL,7081155916LL,7537826378LL,8023987648LL,8541609952LL,9092820762LL,9679913319LL,10305352673LL,10973652839LL};
+static const df32 dft32_exp_f1[16]={4294967296LL,4311754432LL,4328621136LL,4345568350LL,4362597024LL,4379708119LL,4396902600LL,4414181445LL,4431545632LL,4448996141LL,4466533955LL,4484160060LL,4501875450LL,4519681114LL,4537578048LL,4555567254LL};
+static const df32 dft32_exp_f2[16]={4294967296LL,4296005889LL,4297044703LL,4298083737LL,4299122992LL,4300162468LL,4301202165LL,4302242082LL,4303282220LL,4304322579LL,4305363158LL,4306403957LL,4307444977LL,4308486217LL,4309527677LL,4310569358LL};
+static inline df16 df16_exp_pos(df16 x){if(x<=0)return 65536;if(x>=655360)return df32_to_df16(dft_exp_int[10]);unsigned int f=((unsigned int)x)&0xffffU;df32 a=dft_exp_int[((unsigned int)x)>>16],f0=dft_exp_f0[(f>>12)&15U],f1=dft_exp_f1[(f>>8)&15U],f2=dft_exp_f2[(f>>4)&15U],f3=dft_exp_f3[f&15U];return df32_to_df16(df32_mul(a,df32_mul(df32_mul(f0,f3),df32_mul(f1,f2))));}
+static inline df16 df16_exp(df16 x){if(!x)return 65536;if(x>=655360)return df32_to_df16(dft_exp_int[10]);if(x<=-655360)return 0;return x>0?df16_exp_pos(x):df16_div(65536,df16_exp_pos(-x));}
+static inline df16 df16_exp2(df16 x){return df16_exp(df16_mul(x,45426));}
+static inline df32 df32_exp_pos(df32 x){if(x<=0)return 4294967296LL;if(x>=68719476736LL)return dft32_exp_int[16];unsigned int f=(unsigned int)(((unsigned long long)x)>>16);df32 a=dft32_exp_int[((unsigned long long)x)>>32];df32 t0=df32_mul(dft32_exp_f0[(f>>12)&15U],dft_exp_f3[f&15U]),t1=df32_mul(dft32_exp_f1[(f>>8)&15U],dft32_exp_f2[(f>>4)&15U]);return df32_mul(a,df32_mul(t0,t1));}
+static inline df32 df32_exp(df32 x){if(!x)return 4294967296LL;if(x>=68719476736LL)return dft32_exp_int[16];if(x<=-68719476736LL)return df32_div(4294967296LL,dft32_exp_int[16]);return x>0?df32_exp_pos(x):df32_div(4294967296LL,df32_exp_pos(-x));}
+static inline df32 df32_exp2(df32 x){return df32_exp(df32_mul(x,2977044472LL));}
+static inline df16 df16_log(df16 x){if(x<=0)return (-2147483647-1);int v=x,e=0;while(v>=131072){v/=2;++e;}while(v<65536){v*=2;--e;}df16 t=df16_div(df16_sub(v,65536),df16_add(v,65536)),t2=df16_mul(t,t),t3=df16_mul(t2,t),t5=df16_mul(t3,t2),s=df16_add(t,df16_add(df16_mul(t3,21845),df16_mul(t5,13107)));return df16_add(df16_add(s,s),df_sat_i32((df32)e*45426LL));}
+static inline df16 df16_log2(df16 x){return x<=0?(-2147483647-1):df16_div(df16_log(x),45426);}
+static inline df32 df32_log(df32 x){if(x<=0)return (-9223372036854775807LL-1LL);df32 v=x;int e=0;while(v>=8589934592LL){v/=2;++e;}while(v<4294967296LL){v*=2;--e;}df32 t=df32_div(df32_sub(v,4294967296LL),df32_add(v,4294967296LL)),t2=df32_mul(t,t),t3=df32_mul(t2,t),t5=df32_mul(t3,t2),s=df32_add(t,df32_add(df32_mul(t3,1431655765LL),df32_mul(t5,858993459LL)));return df32_add(df32_add(s,s),(df32)e*2977044472LL);}
+static inline df32 df32_log2(df32 x){return x<=0?(-9223372036854775807LL-1LL):df32_div(df32_log(x),2977044472LL);}
+static const df32 dft_sin_lut[32]={0LL,428781260LL,853278278LL,1269249623LL,1672539045LL,2059117009LL,2425120957LL,2766893898LL,3081020950LL,3364363459LL,3614090360LL,3827706465LL,4003077393LL,4138450894LL,4232474362LL,4284208345LL,4293135935LL,4259167929LL,4182643726LL,4064327929LL,3905402711LL,3707455999LL,3472465613LL,3202779499LL,2901092270LL,2570418286LL,2214061533LL,1835582609LL,1438763149LL,1027568045LL,606105819LL,178587585LL};
+static const df32 dft_cos_lut[32]={4294967296LL,4273510349LL,4209353900LL,4103138977LL,3955926847LL,3769188403LL,3544789474LL,3284972181LL,2992332532LL,2669794485LL,2320580734LL,1948180507LL,1556314705LL,1148898721LL,730003320LL,303813968LL,-125410993LL,-553382889LL,-975825566LL,-1388518117LL,-1787337053LL,-2168297509LL,-2527593052LL,-2861633722LL,-3167081893LL,-3440885628LL,-3680309172LL,-3882960283LL,-4046814139LL,-4170233565LL,-4251985396LL,-4291252795LL};
+static inline df32 df32_sin_poly(df32 d){df32 d2=df32_mul(d,d),d3=df32_mul(d2,d),d5=df32_mul(d3,d2);return df32_add(d,df32_sub(df32_div(d5,515396075520LL),df32_div(d3,25769803776LL)));}
+static inline df32 df32_cos_poly(df32 d){df32 d2=df32_mul(d,d),d4=df32_mul(d2,d2);return df32_add(4294967296LL,df32_sub(df32_div(d4,103079215104LL),df32_div(d2,8589934592LL)));}
+static inline df32 df32_sin(df32 x){const df32 pi=13493037705LL,two_pi=26986075409LL,step=429496730LL;x%=two_pi;if(x<0)x+=two_pi;_Bool neg=0;if(x>pi){x=two_pi-x;neg=1;}df32 idx=(x+step/2)/step;if(idx>31)idx=31;df32 d=df32_sub(x,idx*step);df32 r=df32_add(df32_mul(dft_sin_lut[idx],df32_cos_poly(d)),df32_mul(dft_cos_lut[idx],df32_sin_poly(d)));if(r>4294967296LL)r=4294967296LL;if(r<(-4294967296LL))r=-4294967296LL;return neg?df32_neg(r):r;}
 '''
 
 class ClangRenderer(CStyleLanguage):
@@ -303,6 +327,9 @@ class ClangRenderer(CStyleLanguage):
     (UPat(Ops.NEG, dtype=dtypes.df16, src=(UPat.var("a"),)), lambda ctx,a: f"df16_neg({ctx[a]})"),
     (UPat(Ops.RECIPROCAL, dtype=dtypes.df16, src=(UPat.var("a"),)), lambda ctx,a: f"df16_div(65536,{ctx[a]})"),
     (UPat(Ops.SQRT, dtype=dtypes.df16, src=(UPat.var("a"),)), lambda ctx,a: f"df16_sqrt({ctx[a]})"),
+    (UPat(Ops.EXP2, dtype=dtypes.df16, src=(UPat.var("a"),)), lambda ctx,a: f"df16_exp2({ctx[a]})"),
+    (UPat(Ops.LOG2, dtype=dtypes.df16, src=(UPat.var("a"),)), lambda ctx,a: f"df16_log2({ctx[a]})"),
+    (UPat(Ops.SIN, dtype=dtypes.df16, src=(UPat.var("a"),)), lambda ctx,a: f"df32_to_df16(df32_sin(df16_to_df32({ctx[a]})))"),
     (UPat(Ops.ADD, dtype=dtypes.df32, src=(UPat.var("a"), UPat.var("b"))), lambda ctx,a,b: f"df32_add({ctx[a]},{ctx[b]})"),
     (UPat(Ops.SUB, dtype=dtypes.df32, src=(UPat.var("a"), UPat.var("b"))), lambda ctx,a,b: f"df32_sub({ctx[a]},{ctx[b]})"),
     (UPat(Ops.MUL, dtype=dtypes.df32, src=(UPat.var("a"), UPat.var("b"))), lambda ctx,a,b: f"df32_mul({ctx[a]},{ctx[b]})"),
@@ -310,6 +337,9 @@ class ClangRenderer(CStyleLanguage):
     (UPat(Ops.NEG, dtype=dtypes.df32, src=(UPat.var("a"),)), lambda ctx,a: f"df32_neg({ctx[a]})"),
     (UPat(Ops.RECIPROCAL, dtype=dtypes.df32, src=(UPat.var("a"),)), lambda ctx,a: f"df32_div(4294967296LL,{ctx[a]})"),
     (UPat(Ops.SQRT, dtype=dtypes.df32, src=(UPat.var("a"),)), lambda ctx,a: f"df32_sqrt({ctx[a]})"),
+    (UPat(Ops.EXP2, dtype=dtypes.df32, src=(UPat.var("a"),)), lambda ctx,a: f"df32_exp2({ctx[a]})"),
+    (UPat(Ops.LOG2, dtype=dtypes.df32, src=(UPat.var("a"),)), lambda ctx,a: f"df32_log2({ctx[a]})"),
+    (UPat(Ops.SIN, dtype=dtypes.df32, src=(UPat.var("a"),)), lambda ctx,a: f"df32_sin({ctx[a]})"),
     (UPat(Ops.MAX, dtype=dtypes.dfloats, src=(UPat.var("a"), UPat.var("b"))), lambda ctx,a,b: f"({ctx[a]}>{ctx[b]}?{ctx[a]}:{ctx[b]})"),
     (UPat(Ops.WHERE, dtype=dtypes.dfloats, src=(UPat.var("p"), UPat.var("a"), UPat.var("b"))), lambda ctx,p,a,b: f"({ctx[p]}?{ctx[a]}:{ctx[b]})"),
     (UPat(Ops.CAST, dtype=dtypes.df32, src=(UPat.var("a", dtypes.df16),)), lambda ctx,a: f"df16_to_df32({ctx[a]})"),
@@ -334,7 +364,16 @@ class ClangRenderer(CStyleLanguage):
   # there is also no native bfl16 <-> fp16 conversion on those CPUs
   extra_matcher = PatternMatcher([(UPat.var("x", dtypes.float64).cast(dtypes.float16), lambda x: x.cast(dtypes.float32).cast(dtypes.float16)),
                                  (UPat.var("x", dtypes.float64).cast(dtypes.bfloat16), lambda x: x.cast(dtypes.float32).cast(dtypes.bfloat16)),
-                                 (UPat.var("x", dtypes.bfloat16).cast(dtypes.float16), lambda x: x.cast(dtypes.float32).cast(dtypes.float16))]) \
+                                 (UPat.var("x", dtypes.bfloat16).cast(dtypes.float16), lambda x: x.cast(dtypes.float32).cast(dtypes.float16)),
+    (UPat(Ops.EXP2, dtype=dtypes.df16, src=(UPat.var("x"),)), lambda x: UOp(Ops.CUSTOMI,dtypes.df16,(x,),arg="df16_exp2({0})")),
+    (UPat(Ops.LOG2, dtype=dtypes.df16, src=(UPat.var("x"),)), lambda x: UOp(Ops.CUSTOMI,dtypes.df16,(x,),arg="df16_log2({0})")),
+    (UPat(Ops.SIN, dtype=dtypes.df16, src=(UPat.var("x"),)), lambda x: UOp(Ops.CUSTOMI,dtypes.df16,(x,),arg="df32_to_df16(df32_sin(df16_to_df32({0})))")),
+    (UPat(Ops.RECIPROCAL, dtype=dtypes.df16, src=(UPat.var("x"),)), lambda x: UOp(Ops.CUSTOMI,dtypes.df16,(x,),arg="df16_div(65536,{0})")),
+    (UPat(Ops.EXP2, dtype=dtypes.df32, src=(UPat.var("x"),)), lambda x: UOp(Ops.CUSTOMI,dtypes.df32,(x,),arg="df32_exp2({0})")),
+    (UPat(Ops.LOG2, dtype=dtypes.df32, src=(UPat.var("x"),)), lambda x: UOp(Ops.CUSTOMI,dtypes.df32,(x,),arg="df32_log2({0})")),
+    (UPat(Ops.SIN, dtype=dtypes.df32, src=(UPat.var("x"),)), lambda x: UOp(Ops.CUSTOMI,dtypes.df32,(x,),arg="df32_sin({0})")),
+    (UPat(Ops.RECIPROCAL, dtype=dtypes.df32, src=(UPat.var("x"),)),
+     lambda x: UOp(Ops.CUSTOMI,dtypes.df32,(x,),arg="df32_div(4294967296LL,{0})"))]) \
     + create_non_native_float_pats((dtypes.bfloat16,)) + pm_manual_bf16_cast
 
   if sys.platform == 'win32':

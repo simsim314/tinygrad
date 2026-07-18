@@ -454,12 +454,18 @@ sym = symbolic+pm_simplify_valid+PatternMatcher([
   # store of where with invalid -> gated store
   (UPat(Ops.STORE, src=(UPat(Ops.INDEX, name="index"), UPat.var("cond").where(UPat.var("val"), invalid_pat))),
    lambda index, cond, val, i: UOp.store(index.src[0].index(index.src[1].valid(cond)), val)),
-  ((UPat.var("x") * UPat.var("x")).reciprocal(), lambda x: x.reciprocal()*x.reciprocal()),  # 1/(x^c) -> (1/x)^c
-  ((UPat.var("x") * UPat.var("x") * UPat.var("x")).reciprocal(), lambda x: x.reciprocal()*x.reciprocal()*x.reciprocal()),
-  ((UPat.var("x") * UPat.cvar("c")).reciprocal(), lambda x,c: x.reciprocal()*c.reciprocal()), # 1/(x*c) -> (1/c)*(1/x)
-  (UPat.var("x") * ((1+UPat.var("x")).reciprocal().named("d")), lambda x,d: 1-d), # x*/(1+x) -> 1-1/(1+x)
-  (UPat.var("x") * ((1+UPat.var("x")).reciprocal().named("d")*UPat.var("y")), lambda x,y,d: y*(1-d)),
-  (UPat.var("x") * ((1+UPat.var("x")).reciprocal().named("d")+UPat.var("y")), lambda x,y,d: (1-d)+x*y),
+  ((UPat.var("x") * UPat.var("x")).reciprocal(),
+   lambda x: None if dtypes.is_dfloat(x.dtype.scalar()) else x.reciprocal()*x.reciprocal()),  # 1/(x^c) -> (1/x)^c
+  ((UPat.var("x") * UPat.var("x") * UPat.var("x")).reciprocal(),
+   lambda x: None if dtypes.is_dfloat(x.dtype.scalar()) else x.reciprocal()*x.reciprocal()*x.reciprocal()),
+  ((UPat.var("x") * UPat.cvar("c")).reciprocal(),
+   lambda x,c: None if dtypes.is_dfloat(x.dtype.scalar()) else x.reciprocal()*c.reciprocal()), # 1/(x*c) -> (1/c)*(1/x)
+  (UPat.var("x") * ((1+UPat.var("x")).reciprocal().named("d")),
+   lambda x,d: None if dtypes.is_dfloat(x.dtype.scalar()) else 1-d), # x*/(1+x) -> 1-1/(1+x)
+  (UPat.var("x") * ((1+UPat.var("x")).reciprocal().named("d")*UPat.var("y")),
+   lambda x,y,d: None if dtypes.is_dfloat(x.dtype.scalar()) else y*(1-d)),
+  (UPat.var("x") * ((1+UPat.var("x")).reciprocal().named("d")+UPat.var("y")),
+   lambda x,y,d: None if dtypes.is_dfloat(x.dtype.scalar()) else (1-d)+x*y),
   # move const multiply after REDUCE (NOTE: the mul chain can do this, but only if it's a same dtype reduce)
   ((UPat.var("x")*UPat.cvar("c")).reduce(arg=Ops.ADD, name="r", allow_any_len=True),
    lambda x,c,r: None if r.dtype.scalar() in dtypes.dfloats else r.replace(src=(x,)+r.src[1:])*c.arg),

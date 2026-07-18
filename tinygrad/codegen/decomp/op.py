@@ -126,6 +126,7 @@ def get_late_rewrite_patterns(ops:tuple[Ops, ...], disable_fast_idiv:bool) -> Pa
     if Ops.SHL in ops: pat += [(UPat.var('x').alu(Ops.SHL, UPat.cvar('n'))+UPat.var('c'), lambda x,n,c: x.alu(Ops.MULACC, x.const_like(1<<n.arg), c))]
   # some backends emit FDIV for RECIP, in that case: a*(1/b) -> a/b
   if Ops.FDIV in ops:
-    pat += [(UPat.var("x").reciprocal(), lambda x: x.const_like(1).alu(Ops.FDIV, x))]
-    pat += [(UPat.var("a", dtypes.floats) * UPat.const(dtypes.floats, 1).alu(Ops.FDIV, UPat.var("b")), lambda a,b: a.alu(Ops.FDIV, b))]
+    pat += [(UPat.var("x").reciprocal(), lambda x: None if dtypes.is_dfloat(x.dtype.scalar()) else x.const_like(1).alu(Ops.FDIV, x))]
+    pat += [(UPat.var("a", dtypes.floats) * UPat.const(dtypes.floats, 1).alu(Ops.FDIV, UPat.var("b")),
+             lambda a,b: None if dtypes.is_dfloat(a.dtype.scalar()) else a.alu(Ops.FDIV, b))]
   return PatternMatcher(pat)

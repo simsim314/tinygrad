@@ -270,7 +270,8 @@ def get_transcendental_patterns(ops:tuple[Ops, ...], force_transcendental:bool) 
   for op,f in ((Ops.EXP2, xexp2), (Ops.LOG2, xlog2), (Ops.SIN, xsin)):
     if op not in ops or force_transcendental:
       pat += [(UPat(op, dtype=TRANSCENDENTAL_DTYPES, src=(UPat.var("d"),)), f),
-              (UPat(op, dtype=tuple(dt for dt in dtypes.floats if dt not in TRANSCENDENTAL_DTYPES), src=(UPat.var("d"),), name="x"),
+              (UPat(op, dtype=tuple(dt for dt in dtypes.floats if dt not in TRANSCENDENTAL_DTYPES and not dtypes.is_dfloat(dt)),
+                    src=(UPat.var("d"),), name="x"),
                 lambda x,d: d.cast(dtypes.float32).alu(x.op).cast(x.dtype))]
   # rewrite SQRT to xpow 0.5
   if Ops.SQRT not in ops or force_transcendental: pat.append((UPat(Ops.SQRT, src=UPat.var("d")), lambda d: xpow(d, d.const_like(0.5))))
