@@ -54,14 +54,14 @@ def concat_weights(models, device=None):
     return lazy_tensors[0].cat(*lazy_tensors[1:], dim=axis)
   return {name: convert(name) for name in {name: None for model in models for name in model}}
 
-def load(fn:str, gguf_device=None):
+def load(fn:str, gguf_device=None, deterministic_q6_fp16=False):
   if fn.endswith('.index.json'):
     with open(fn) as fp: weight_map = json.load(fp)['weight_map']
     parts = {n: load(str(Path(fn).parent / Path(n).name)) for n in set(weight_map.values())}
     return {k: parts[n][k] for k, n in weight_map.items()}
   elif fn.endswith(".gguf"):
     gguf_tensor = Tensor.empty(os.stat(fn).st_size, dtype=dtypes.uint8, device=f"disk:{fn}").to(gguf_device or Device.DEFAULT)
-    return gguf_load(gguf_tensor)[1]
+    return gguf_load(gguf_tensor,deterministic_q6_fp16=deterministic_q6_fp16)[1]
   elif fn.endswith(".safetensors"):
     return safe_load(fn)
   else:
@@ -220,7 +220,7 @@ def build_transformer(model_path: Path, model_size="8B", quantize=None, scale_dt
       elif (model_path / "model.safetensors").exists(): weights = load(str(model_path / "model.safetensors"))
       else: weights = concat_weights([load(str(model_path / f"consolidated.{i:02d}.pth")) for i in range(MODEL_PARAMS[model_size]["files"])], device[0] if isinstance(device, tuple) else device)
     else:
-      weights = load(str(model_path), gguf_device="CPU" if dfloat or low_memory else None)
+      weights = load(str(model_path),gguf_device="CPU" if dfloat or low_memory else None,deterministic_q6_fp16=dfloat)
     if "model.embed_tokens.weight" in weights:
       weights = convert_from_huggingface(weights, MODEL_PARAMS[model_size]["args"]["n_layers"], MODEL_PARAMS[model_size]["args"]["n_heads"], MODEL_PARAMS[model_size]["args"]["n_kv_heads"])
     elif "token_embd.weight" in weights:

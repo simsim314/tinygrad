@@ -10,7 +10,9 @@ the deterministic integer implementation.
 
 ## Required before GGUF-level cross-machine claims
 
-- Replace native-FP Q4/Q5/Q6/Q8 GGUF dequantization with integer-only decoding
+- Q6_K is implemented for the DF Llama loader as integer-only decode directly
+  to canonical FP16 (round-to-nearest, ties-to-even), followed by a byte-preserving
+  upload. Replace the remaining native-FP Q4/Q5/Q8 GGUF dequantization paths
   and explicitly specified rounding to canonical FP16, DF16, or consuming
   kernel operands.
 - Pin block traversal, scale application order, subnormal behavior, NaN/Inf
