@@ -441,6 +441,7 @@ class CUDARenderer(CStyleLanguage):
     (UPat(Ops.NEG, dtype=dtypes.df32, src=(UPat.var("a"),)), lambda ctx,a: f"df32_neg({ctx[a]})"),
     (UPat(Ops.RECIPROCAL, dtype=dtypes.df32, src=(UPat.var("a"),)), lambda ctx,a: f"df32_div(4294967296LL,{ctx[a]})"),
     (UPat(Ops.SQRT, dtype=dtypes.df32, src=(UPat.var("a"),)), lambda ctx,a: f"df32_sqrt({ctx[a]})"),
+    (UPat(Ops.EXP2, dtype=dtypes.df32, src=(UPat.var("a"),)), lambda ctx,a: f"df32_exp2({ctx[a]})"),
     (UPat(Ops.MAX, dtype=dtypes.dfloats, src=(UPat.var("a"), UPat.var("b"))), lambda ctx,a,b: f"({ctx[a]}>{ctx[b]}?{ctx[a]}:{ctx[b]})"),
     (UPat(Ops.WHERE, dtype=dtypes.dfloats, src=(UPat.var("p"), UPat.var("a"), UPat.var("b"))), lambda ctx,p,a,b: f"({ctx[p]}?{ctx[a]}:{ctx[b]})"),
     (UPat(Ops.CAST, dtype=dtypes.df32, src=(UPat.var("a", dtypes.df16),)), lambda ctx,a: f"df16_to_df32({ctx[a]})"),
@@ -504,13 +505,23 @@ __device__ __constant__ df32 dft_exp_f0[16]={4294967296LL,4571968888LL,486683554
 __device__ __constant__ df32 dft_exp_f1[16]={4294967296LL,4311777323LL,4328653142LL,4345595011LL,4362603189LL,4379677935LL,4396819510LL,4414028175LL,4431304193LL,4448647827LL,4466059343LL,4483539005LL,4501087080LL,4518703837LL,4536389544LL,4554144470LL};
 __device__ __constant__ df32 dft_exp_f2[16]={4294967296LL,4296016000LL,4297064960LL,4298114176LL,4299163649LL,4300213377LL,4301263362LL,4302313604LL,4303364101LL,4304414856LL,4305465866LL,4306517134LL,4307568658LL,4308620439LL,4309672477LL,4310724771LL};
 __device__ __constant__ df32 dft_exp_f3[16]={4294967296LL,4295032833LL,4295098370LL,4295163909LL,4295229448LL,4295294989LL,4295360530LL,4295426073LL,4295491616LL,4295557161LL,4295622706LL,4295688253LL,4295753800LL,4295819349LL,4295884898LL,4295950449LL};
+__device__ __constant__ df32 dft32_exp_int[17]={4294967296LL,11674931555LL,31735754293LL,86266724208LL,234497268814LL,637429664642LL,1732713474316LL,4710003551159LL,12803117065094LL,34802480465680LL,94602950235158LL,257157480542844LL,699026506411923LL,1900151049990741LL,5165146070517208LL,14040322704823566LL,38165554074222848LL};
+__device__ __constant__ df32 dft32_exp_f0[16]={4294967296LL,4571968888LL,4866835547LL,5180719473LL,5514847172LL,5870523573LL,6249135400LL,6652155197LL,7081155916LL,7537826378LL,8023987648LL,8541609952LL,9092820762LL,9679913319LL,10305352673LL,10973652839LL};
+__device__ __constant__ df32 dft32_exp_f1[16]={4294967296LL,4311754432LL,4328621136LL,4345568350LL,4362597024LL,4379708119LL,4396902600LL,4414181445LL,4431545632LL,4448996141LL,4466533955LL,4484160060LL,4501875450LL,4519681114LL,4537578048LL,4555567254LL};
+__device__ __constant__ df32 dft32_exp_f2[16]={4294967296LL,4296005889LL,4297044703LL,4298083737LL,4299122992LL,4300162468LL,4301202165LL,4302242082LL,4303282220LL,4304322579LL,4305363158LL,4306403957LL,4307444977LL,4308486217LL,4309527677LL,4310569358LL};
 __device__ __forceinline__ df16 df16_exp_pos(df16 x){
   if(x<=0)return 65536;if(x>=655360)return df32_to_df16(dft_exp_int[10]);unsigned int f=((unsigned int)x)&0xffffU;
   df32 a=dft_exp_int[((unsigned int)x)>>16],f0=dft_exp_f0[(f>>12)&15U],f1=dft_exp_f1[(f>>8)&15U],f2=dft_exp_f2[(f>>4)&15U],f3=dft_exp_f3[f&15U];
   return df32_to_df16(df32_mul(a,df32_mul(df32_mul(f0,f3),df32_mul(f1,f2))));
 }
 __device__ __forceinline__ df16 df16_exp(df16 x){if(!x)return 65536;if(x>=655360)return df32_to_df16(dft_exp_int[10]);if(x<=-655360)return 0;return x>0?df16_exp_pos(x):df16_div(65536,df16_exp_pos(-x));}
-__device__ __forceinline__ df16 df16_exp2(df16 x){return df16_exp(df16_mul(x,45426));}''')
+__device__ __forceinline__ df16 df16_exp2(df16 x){return df16_exp(df16_mul(x,45426));}
+__device__ __forceinline__ df32 df32_exp_pos(df32 x){
+  if(x<=0)return 4294967296LL;if(x>=68719476736LL)return dft32_exp_int[16];unsigned int f=(unsigned int)(((unsigned long long)x)>>16);df32 a=dft32_exp_int[((unsigned long long)x)>>32];
+  df32 t0=df32_mul(dft32_exp_f0[(f>>12)&15U],dft_exp_f3[f&15U]),t1=df32_mul(dft32_exp_f1[(f>>8)&15U],dft32_exp_f2[(f>>4)&15U]);return df32_mul(a,df32_mul(t0,t1));
+}
+__device__ __forceinline__ df32 df32_exp(df32 x){if(!x)return 4294967296LL;if(x>=68719476736LL)return dft32_exp_int[16];if(x<=-68719476736LL)return df32_div(4294967296LL,dft32_exp_int[16]);return x>0?df32_exp_pos(x):df32_div(4294967296LL,df32_exp_pos(-x));}
+__device__ __forceinline__ df32 df32_exp2(df32 x){return df32_exp(df32_mul(x,2977044472LL));}''')
     if any(dt in dtypes.fp8s for dt, _ in used_dtypes): prefix.append("#include <cuda_fp8.h>")
     if any(dt == dtypes.half for dt, _ in used_dtypes): prefix.append("#include <cuda_fp16.h>")
     if any(dt == dtypes.bfloat16 for dt, _ in used_dtypes): prefix.append("#include <cuda_bf16.h>")

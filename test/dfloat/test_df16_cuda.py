@@ -66,4 +66,11 @@ class TestDFloatCUDA(unittest.TestCase):
     expected=[[52429,104858,-52429,26214],[55609,-18536,111218,37073]]
     for _ in range(20): self.assertEqual(bits16(norm(x)),expected)
 
+  def test_softmax_class_uses_df32_core(self):
+    x=raw16([0,65536,131072,-65536,32768,-32768,196608,65536],(2,4))
+    expected=[[5711,15524,42200,2101],[4312,1586,52529,7109]]
+    for _ in range(20):
+      got=bits16(x.softmax(-1));self.assertEqual(got,expected)
+      for row in got:self.assertLessEqual(abs(sum(row)-65536),1)
+
 if __name__ == "__main__": unittest.main()

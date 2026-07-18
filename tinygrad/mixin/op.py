@@ -692,6 +692,10 @@ class OpMixin(ElementwiseMixin, ReduceMixin):
     print(t.softmax(axis=0).numpy())
     ```
     """
+    if self.dtype in dtypes.dfloats and dtype is None:
+      m = (self-self.max(axis=axis,keepdim=True).detach()).cast(dtypes.df32)
+      e = m.exp()
+      return (e*e.sum(axis=axis,keepdim=True,dtype=dtypes.df32).reciprocal()).cast(self.dtype)
     _, e, ss = self._softmax(axis, dtype)
     return e * ss.reciprocal()
 
