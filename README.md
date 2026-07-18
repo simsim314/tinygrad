@@ -38,6 +38,45 @@ The initial proof model is Llama-3.2-1B-Instruct Q6_K. Large model files should
 be stored under `/mnt/pacer` (or another dedicated model disk), not in this
 repository or a home-directory download cache.
 
+
+## Getting an attestation
+Attestation is exposed through the `dfloat_attest_llama.py` command. The following example runs on CUDA, generates 10 tokens for the prompt `Paris`, and writes the resulting attestation artifacts to the specified output directory:
+
+```sh
+python examples/dfloat_attest_llama.py --device CUDA \
+  --model /mnt/pacer/ai-models/tinygrad/llama3-1b-instruct/Llama-3.2-1B-Instruct-Q6_K.gguf \
+  --tokenizer /mnt/pacer/ai-models/tinygrad/llama3-1b-instruct/tokenizer.model \
+  --prompt "Paris" \
+  --max-tokens 10 \
+  --output-dir /mnt/pacer/ai-models/tinygrad/attestations/paris-simple-10
+```
+
+Replace `--device CUDA` with `--cpu` to force CPU execution. If neither option is specified, tinygrad uses its default device.
+
+The output directory contains:
+
+- `attestation.json` — machine-readable attestation artifact.
+- `attestation.txt` — human-readable attestation report.
+- `command.txt` — exact command used for the run.
+- `story.txt` — generated text.
+- 
+For multiple generated tokens, repeat the forward and selection calls with
+strictly increasing `step`/`position` before calling `session.artifact`.
+
+Useful JSON fields are:
+
+- `run_root`: final run commitment.
+- `document_sha256`: commitment to the canonical artifact document.
+- `weight_manifest_root`: commitment to persistent weights.
+- `steps[].token_combined_root`: ordered per-token commitment.
+- `steps[].ordered_boundary_root` and `steps[].boundary_xor`: ordered proof and
+  parallel diagnostic aggregate.
+- `steps[].modules[].witnesses`: intermediate layer witness names, tensor roots,
+  and chained roots.
+
+The full framing and witness specification is in
+[`docs/dfloat-attestation-v1.md`](docs/dfloat-attestation-v1.md).
+
 ## Run the CUDA model
 
 Use Python 3.11 or newer and place `tokenizer.model` beside the GGUF file. Set
@@ -90,52 +129,6 @@ The most important current checks are:
 - `test_two_token_kv_attestation`
 - `test_q6_cpu_decode_then_upload_preserves_canonical_fp16`
 - `test_integer_float32_to_fp16_matches_reference`
-
-## Getting an attestation
-
-Attestation is currently exposed as a Python API. Create one
-`AttestationSession`, use it for every ordered token step, record greedy token
-selection, then serialize the final document:
-
-```python
-import json
-from extra.dfloat_attestation import AttestationSession
-from extra.dfloat_attested_llama import attest_dense_llama_forward, attest_greedy_selection
-
-session = AttestationSession()
-logits, recorder = attest_dense_llama_forward(
-  model, token_tensor, step=position, start_pos=position, session=session)
-selected_token = attest_greedy_selection(logits, recorder)
-
-artifact = session.artifact({
-  "model": "Llama-3.2-1B-Instruct-Q6_K",
-  "prompt_tokens": prompt_tokens,
-  "sampling": "greedy",
-}, generated_text)
-
-with open("attestation.json", "w", encoding="utf-8") as f:
-  json.dump(artifact, f, sort_keys=True, separators=(",", ":"))
-
-with open("attestation.txt", "w", encoding="utf-8") as f:
-  f.write(session.text_artifact(artifact))
-```
-
-For multiple generated tokens, repeat the forward and selection calls with
-strictly increasing `step`/`position` before calling `session.artifact`.
-
-Useful JSON fields are:
-
-- `run_root`: final run commitment.
-- `document_sha256`: commitment to the canonical artifact document.
-- `weight_manifest_root`: commitment to persistent weights.
-- `steps[].token_combined_root`: ordered per-token commitment.
-- `steps[].ordered_boundary_root` and `steps[].boundary_xor`: ordered proof and
-  parallel diagnostic aggregate.
-- `steps[].modules[].witnesses`: intermediate layer witness names, tensor roots,
-  and chained roots.
-
-The full framing and witness specification is in
-[`docs/dfloat-attestation-v1.md`](docs/dfloat-attestation-v1.md).
 
 ## Remaining work
 
