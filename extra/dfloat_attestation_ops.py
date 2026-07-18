@@ -136,7 +136,7 @@ def attested_rope(q:Tensor, k:Tensor, frequencies:Tensor, plan:ModulePlan) -> tu
   return (qo,ko),values
 
 
-def attested_attention_scores(q:Tensor, k:Tensor, mask:Tensor|None, plan:ModulePlan) -> tuple[Tensor, OrderedDict[str,Tensor]]:
+def attested_attention_scores(q:Tensor, k:Tensor, mask:Tensor|None, plan:ModulePlan, *, causal:bool) -> tuple[Tensor, OrderedDict[str,Tensor]]:
   if plan.kind != "attention_scores": raise ValueError(f"expected attention score plan, got {plan.kind}")
   kt=k.transpose(-2,-1)
   dx,dw=q.ndim,kt.ndim
@@ -146,8 +146,9 @@ def attested_attention_scores(q:Tensor, k:Tensor, mask:Tensor|None, plan:ModuleP
   qk,frontiers=reduction_frontiers(products,Ops.ADD,-1)
   head_root=qk.const_like(q.shape[-1]).sqrt().contiguous().realize()
   scaled=(qk/head_root).contiguous().realize()
-  if mask is None: mask=scaled.const_like(1).cast(dtypes.bool).tril()
-  additive=mask.where(scaled.const_like(0),scaled.const_like(-float("inf"))) if mask.dtype == dtypes.bool else mask
+  if mask is None and causal: mask=scaled.const_like(1).cast(dtypes.bool).tril()
+  if mask is None: additive=scaled.const_like(0)
+  else: additive=mask.where(scaled.const_like(0),scaled.const_like(-float("inf"))) if mask.dtype == dtypes.bool else mask
   masked=(scaled+additive).contiguous().realize()
   output=masked.cast(dtypes.df16).contiguous().realize()
   values=OrderedDict((('q_input',q),('repeated_k_input',k)))

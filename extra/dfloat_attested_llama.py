@@ -4,11 +4,14 @@ from __future__ import annotations
 from collections import OrderedDict
 from tinygrad import Tensor, dtypes
 
-from extra.dfloat_attestation import AttestationRecorder
+from extra.dfloat_attestation import AttestationRecorder, AttestationSession, RootReference, ordered_root, sha256_frame, tensor_raw_bytes
 from extra.dfloat_attestation_ops import (attested_attention_scores, attested_gate_product, attested_matmul,
   attested_residual, attested_rmsnorm, attested_rope, attested_silu, attested_softmax)
 from extra.dfloat_attestation_schema import (attention_scores_plan, embedding_plan, gate_product_plan, matmul_plan,
-  residual_plan, rmsnorm_plan, rope_plan, silu_plan, softmax_plan)
+  residual_plan, rmsnorm_plan, rope_plan, silu_plan, softmax_plan, kv_update_plan)
+from extra.dfloat_attestation_schema import token_selection_plan
+from tinygrad.uop import Ops
+from extra.dfloat_attestation_ops import reduction_frontiers
 
 
 def _record(recorder:AttestationRecorder, plan, values, inputs, outputs):
@@ -32,12 +35,15 @@ def _rmsnorm(x:Tensor, layer, name:str, recorder:AttestationRecorder) -> Tensor:
 
 
 def attest_dense_llama_forward(model, tokens:Tensor, *, step:int=0, start_pos:int=0,
-                               recorder:AttestationRecorder|None=None) -> tuple[Tensor,AttestationRecorder]:
-  """Run the dense Llama graph and record witnesses.  V1 initially supports no KV cache."""
+                               recorder:AttestationRecorder|None=None, session:AttestationSession|None=None) -> tuple[Tensor,AttestationRecorder]:
+  """Run the dense Llama graph and record witnesses, including KV state transitions."""
   if tokens.dtype != dtypes.int32: tokens=tokens.cast(dtypes.int32)
-  recorder=recorder or AttestationRecorder(step)
-  if any(hasattr(layer.attention,"cache_kv") or layer.attention.max_context for layer in model.layers):
-    raise NotImplementedError("attested KV-cache execution is implemented in the next checkpoint")
+  if recorder is None: recorder=session.recorder(step) if session is not None else AttestationRecorder(step)
+  if session is None:
+    session=AttestationSession()
+    session.weights=recorder.weights
+  if tokens.shape[0] != 1: raise ValueError("v1 attestation supports batch size 1")
+  recorder.set_token_io(input_token=int(tokens[0,-1].item()))
 
   eplan=embedding_plan("tok_embeddings")
   selected=model.tok_embeddings.weight.cast(dtypes.df16)[tokens].contiguous().realize()
@@ -62,12 +68,38 @@ def attest_dense_llama_forward(model, tokens:Tensor, *, step:int=0, start_pos:in
     rplan=rope_plan(f"{prefix}.attention.rope")
     (q,k),rvalues=attested_rope(q,k,frequencies,rplan)
     _record(recorder,rplan,rvalues,("q_input","k_input","frequency_slice"),("rope_output",))
+    causal=not bool(attention.max_context)
+    attention_mask=None
+    if attention.max_context:
+      if not hasattr(attention,"cache_kv"):
+        attention.cache_kv=Tensor.zeros(2,q.shape[0],attention.max_context,attention.n_kv_heads,attention.head_dim,
+                                        dtype=q.dtype,device=q.device).contiguous().realize()
+      prior_k=session.kv_roots.get((layer_index,"k"),sha256_frame("DFAT-KV-EMPTY-V1",(layer_index.to_bytes(4,"little"),b"k")))
+      prior_v=session.kv_roots.get((layer_index,"v"),sha256_frame("DFAT-KV-EMPTY-V1",(layer_index.to_bytes(4,"little"),b"v")))
+      attention.cache_kv[:,:,start_pos:start_pos+tokens.shape[1],:,:].assign(Tensor.stack(k,value)).realize()
+      keys=attention.cache_kv[0,:,0:start_pos+tokens.shape[1],:,:]
+      values=attention.cache_kv[1,:,0:start_pos+tokens.shape[1],:,:]
+      written_k=attention.cache_kv[0,:,start_pos:start_pos+tokens.shape[1],:,:].contiguous().realize()
+      written_v=attention.cache_kv[1,:,start_pos:start_pos+tokens.shape[1],:,:].contiguous().realize()
+      new_k=recorder.commit_tensor(f"{prefix}.attention.k_state",keys)
+      new_v=recorder.commit_tensor(f"{prefix}.attention.v_state",values)
+      session.kv_roots[(layer_index,"k")],session.kv_roots[(layer_index,"v")]=new_k,new_v
+      kvplan=kv_update_plan(f"{prefix}.attention.kv_update")
+      kvvalues=OrderedDict((
+        ("prior_k_state",RootReference(prior_k)),("prior_v_state",RootReference(prior_v)),
+        ("k_update_slice",k),("v_update_slice",value),("written_k_range",written_k),("written_v_range",written_v),
+        ("new_kv_state",RootReference(ordered_root("DFAT-KV-PAIR-V1",(new_k,new_v))))))
+      _record(recorder,kvplan,kvvalues,("prior_k_state","prior_v_state","k_update_slice","v_update_slice"),("new_kv_state",))
+      k,value=keys,values
+      if tokens.shape[1] > 1:
+        attention_mask=Tensor.full((1,1,tokens.shape[1],start_pos+tokens.shape[1]),float("-inf"),
+                                   dtype=h.dtype,device=h.device).triu(start_pos+1)
     if attention.n_rep != 1:
       k=k.repeat((1,1,1,attention.n_rep)).reshape(k.shape[0],k.shape[1],attention.n_kv_heads*attention.n_rep,attention.head_dim)
       value=value.repeat((1,1,1,attention.n_rep)).reshape(value.shape[0],value.shape[1],attention.n_kv_heads*attention.n_rep,attention.head_dim)
     q,k,value=q.transpose(1,2),k.transpose(1,2),value.transpose(1,2)
     score_plan=attention_scores_plan(f"{prefix}.attention.scores",attention.head_dim)
-    score,score_values=attested_attention_scores(q,k,None,score_plan)
+    score,score_values=attested_attention_scores(q,k,attention_mask,score_plan,causal=causal)
     _record(recorder,score_plan,score_values,("q_input","repeated_k_input"),("softmax_input_df16",))
     probability_plan=softmax_plan(f"{prefix}.attention.softmax",int(k.shape[-2]))
     probability,probability_values=attested_softmax(score,probability_plan)
@@ -98,3 +130,21 @@ def attest_dense_llama_forward(model, tokens:Tensor, *, step:int=0, start_pos:in
   normalized=_rmsnorm(h,model.norm,"norm",recorder)
   logits=_linear(normalized,model.output,"output",recorder)
   return logits,recorder
+
+
+def attest_greedy_selection(logits:Tensor, recorder:AttestationRecorder, *, emitted_token_bytes:bytes=b"", text_stop_state:bytes=b"") -> int:
+  values_1d=logits[:,-1,:].flatten().contiguous().realize()
+  maximum,frontiers=reduction_frontiers(values_1d,Ops.MAX,-1)
+  packed_frontiers=frontiers[0].flatten()
+  for frontier in frontiers[1:]: packed_frontiers=packed_frontiers.cat(frontier.flatten())
+  selected=values_1d.argmax().cast(dtypes.int32).reshape(1).contiguous().realize()
+  token=int(selected.item())
+  recorder.set_token_io(selected_token=token)
+  tie_state=tensor_raw_bytes(maximum)+token.to_bytes(4,"little",signed=True)
+  plan=token_selection_plan(sampling=False)
+  values=OrderedDict((
+    ("logits",values_1d),("max_frontiers",packed_frontiers.contiguous().realize()),
+    ("maximum_and_tie_state",tie_state),("selected_token",selected),
+    ("text_stop_state",emitted_token_bytes+b"\0"+text_stop_state)))
+  _record(recorder,plan,values,("logits",),("selected_token","text_stop_state"))
+  return token

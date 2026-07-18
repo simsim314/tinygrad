@@ -3,11 +3,11 @@ import math, unittest
 from tinygrad import Context, Tensor, dtypes
 from tinygrad.nn.state import get_state_dict, load_state_dict
 from extra.dfloat import convert_state_dict_df16, precompute_freqs_cis_df16
-from extra.dfloat_attestation import AttestationRecorder
+from extra.dfloat_attestation import AttestationRecorder, AttestationSession
 from extra.dfloat_attestation_schema import residual_plan
 from extra.dfloat_attestation_ops import attested_matmul, attested_rmsnorm, attested_softmax
 from extra.dfloat_attestation_schema import matmul_plan, rmsnorm_plan, softmax_plan
-from extra.dfloat_attested_llama import attest_dense_llama_forward
+from extra.dfloat_attested_llama import attest_dense_llama_forward, attest_greedy_selection
 from extra.models.llama import Transformer
 
 
@@ -140,6 +140,53 @@ class TestDFCPUCUDA(unittest.TestCase):
       self.assertEqual(logits.bitcast(dtypes.int32).numpy().tolist(),expected.bitcast(dtypes.int32).numpy().tolist())
       results.append(recorder.json())
     self.assertEqual(results[0],results[1])
+
+  def test_one_block_selection_artifact(self):
+    args=dict(dim=8,hidden_dim=16,n_heads=2,n_layers=1,norm_eps=1e-5,vocab_size=32,
+              n_kv_heads=2,max_context=8,jit=False,disable_kv_cache=True)
+    with Context(DEV="CPU"):
+      Tensor.manual_seed(2468)
+      base=Transformer(**args)
+      state={k:v for k,v in get_state_dict(base).items() if k != "freqs_cis"}
+    artifacts=[]
+    for device in ("CPU","CUDA"):
+      with Context(DEV=device): model=Transformer(**args)
+      load_state_dict(model,convert_state_dict_df16(state,device=device),verbose=False,strict=False)
+      model.freqs_cis=precompute_freqs_cis_df16(4,16,10000,device)
+      session=AttestationSession()
+      tokens=Tensor([[1,7,3]],dtype=dtypes.int32,device=device)
+      logits,recorder=attest_dense_llama_forward(model,tokens,session=session)
+      selected=attest_greedy_selection(logits,recorder,emitted_token_bytes=b"llama")
+      artifacts.append((selected,session.artifact({"model":"test-llama","prompt_tokens":[1,7,3]},"llama")))
+    self.assertEqual(artifacts[0],artifacts[1])
+
+  def test_two_token_kv_attestation(self):
+    args=dict(dim=8,hidden_dim=16,n_heads=2,n_layers=1,norm_eps=1e-5,vocab_size=32,
+              n_kv_heads=2,max_context=8,jit=False,disable_kv_cache=False)
+    with Context(DEV="CPU"):
+      Tensor.manual_seed(9876)
+      base=Transformer(**args)
+      state={k:v for k,v in get_state_dict(base).items() if k != "freqs_cis"}
+    transcripts=[]
+    for device in ("CPU","CUDA"):
+      models=[]
+      for _ in range(2):
+        with Context(DEV=device): model=Transformer(**args)
+        load_state_dict(model,convert_state_dict_df16(state,device=device),verbose=False,strict=False)
+        model.freqs_cis=precompute_freqs_cis_df16(4,16,10000,device)
+        models.append(model)
+      ordinary,attested=models
+      session=AttestationSession()
+      steps=[]
+      for position,token in enumerate((1,7)):
+        token_tensor=Tensor([[token]],dtype=dtypes.int32,device=device)
+        with Context(DEV=device):
+          expected=ordinary.forward(token_tensor,position,math.nan,0,0.0,0.0,0.0).realize()
+          logits,recorder=attest_dense_llama_forward(attested,token_tensor,step=position,start_pos=position,session=session)
+        self.assertEqual(logits.bitcast(dtypes.int32).numpy().tolist(),expected.bitcast(dtypes.int32).numpy().tolist())
+        steps.append(recorder.json())
+      transcripts.append(steps)
+    self.assertEqual(transcripts[0],transcripts[1])
 
 
 if __name__ == "__main__": unittest.main()

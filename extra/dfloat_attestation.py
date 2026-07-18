@@ -302,11 +302,17 @@ class ModuleRecord:
 
 class AttestationRecorder:
   """Correctness-first recorder; accelerator hashers can replace only commit_tensor."""
-  def __init__(self, step:int):
+  def __init__(self, step:int, weights:dict[str,bytes]|None=None):
     self.step, self._tensor_index = step, 0
     self.tensors:list[TensorRecord]=[]
     self.modules:list[ModuleRecord]=[]
-    self.weights:dict[str,bytes]={}
+    self.weights={} if weights is None else weights
+    self.input_token:int|None=None
+    self.selected_token:int|None=None
+
+  def set_token_io(self, *, input_token:int|None=None, selected_token:int|None=None):
+    if input_token is not None: self.input_token=int(input_token)
+    if selected_token is not None: self.selected_token=int(selected_token)
 
   def weight_reference(self, name:str, tensor) -> RootReference:
     if name not in self.weights:
@@ -354,3 +360,55 @@ class AttestationRecorder:
             "weights":{k:v.hex() for k,v in sorted(self.weights.items())},
             "ordered_boundary_root":ordered_root("DFAT-ORDERED-BOUNDARIES-V1",boundaries).hex(),
             "boundary_xor":xor_roots(boundaries).hex()}
+
+
+class AttestationSession:
+  """State shared by ordered token-step recorders."""
+  def __init__(self):
+    self.weights:dict[str,bytes]={}
+    self.kv_roots:dict[tuple[int,str],bytes]={}
+    self.steps:list[AttestationRecorder]=[]
+
+  def recorder(self, step:int) -> AttestationRecorder:
+    if self.steps and step <= self.steps[-1].step: raise ValueError("attestation steps must be strictly increasing")
+    recorder=AttestationRecorder(step,self.weights)
+    self.steps.append(recorder)
+    return recorder
+
+  def artifact(self, metadata:Mapping[str,object], generated_text:str) -> dict[str,object]:
+    weight_names=sorted(self.weights)
+    weight_manifest=sha256_frame("DFAT-WEIGHT-MANIFEST-V1",
+      (_u32(len(weight_names))+b"".join(sha256_frame("DFAT-NAMED-WEIGHT-V1",(_text(name),self.weights[name])) for name in weight_names),))
+    previous=ZERO_SHA256
+    step_documents:list[dict[str,object]]=[]
+    step_roots:list[bytes]=[]
+    for recorder in self.steps:
+      if recorder.input_token is None or recorder.selected_token is None:
+        raise ValueError(f"token step {recorder.step} requires input and selected token IDs")
+      ordered,diagnostic_xor,combined=token_root(previous=previous,position=recorder.step,input_token=recorder.input_token,
+                                               selected_token=recorder.selected_token,
+                                               boundary_roots=tuple(x.boundary_root for x in recorder.modules))
+      step_document=recorder.json()
+      step_document.update({"input_token":recorder.input_token,"selected_token":recorder.selected_token,
+                            "ordered_boundary_root":ordered.hex(),"boundary_xor":diagnostic_xor.hex(),
+                            "token_combined_root":combined.hex()})
+      step_documents.append(step_document)
+      step_roots.append(combined)
+      previous=combined
+    ordered_steps=ordered_root("DFAT-ORDERED-STEPS-V1",step_roots)
+    run_root=sha256_frame("DFAT-RUN-V1",(canonical_json_bytes(metadata),weight_manifest,ordered_steps,_text(generated_text)))
+    document:dict[str,object]={"version":1,"metadata":dict(metadata),"weight_manifest_root":weight_manifest.hex(),
+      "ordered_steps_root":ordered_steps.hex(),"steps":step_documents,"generated_text":generated_text,"run_root":run_root.hex()}
+    document["document_sha256"]=document_root(document).hex()
+    return document
+
+  @staticmethod
+  def text_artifact(document:Mapping[str,object]) -> str:
+    steps=document["steps"]
+    assert isinstance(steps,list)
+    lines=[str(document["generated_text"]),"",f"run_sha256 {document['run_root']}",f"document_sha256 {document['document_sha256']}"]
+    for step in steps:
+      assert isinstance(step,dict)
+      lines.append(f"token_step {step['step']} combined {step['token_combined_root']} "
+                   f"ordered {step['ordered_boundary_root']} xor {step['boundary_xor']}")
+    return "\n".join(lines)+"\n"

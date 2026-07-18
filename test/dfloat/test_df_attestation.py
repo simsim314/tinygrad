@@ -90,6 +90,20 @@ class TestDFAttestationCore(unittest.TestCase):
     with self.assertRaisesRegex(ValueError,"witness order mismatch"):
       recorder.record_module(plan,values,input_names=("token_ids",),output_names=("embedding_output",))
 
+  def test_session_artifact_is_ordered_and_self_hashed(self):
+    session=__import__('extra.dfloat_attestation',fromlist=['AttestationSession']).AttestationSession()
+    recorder=session.recorder(0)
+    plan=embedding_plan("embed")
+    values={name:bytes([i]) for i,name in enumerate(plan.witnesses)}
+    recorder.record_module(plan,values,input_names=("token_ids",),output_names=("embedding_output",))
+    recorder.set_token_io(input_token=7,selected_token=8)
+    artifact=session.artifact({"model":"small","temperature_q16":0},"hello")
+    self.assertEqual(len(artifact["run_root"]),64)
+    self.assertEqual(len(artifact["steps"][0]["token_combined_root"]),64)
+    self.assertIn("run_sha256",session.text_artifact(artifact))
+    changed=session.artifact({"model":"small","temperature_q16":0},"hello!")
+    self.assertNotEqual(artifact["run_root"],changed["run_root"])
+
 
 class TestDFAttestationSchema(unittest.TestCase):
   def test_reduction_frontiers_are_formulaic(self):
