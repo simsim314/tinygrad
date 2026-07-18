@@ -10,6 +10,13 @@ if not hasattr(typing,"Self"):
   from typing_extensions import Self
   setattr(typing,"Self",Self)
 
+# The GGUF loading path consults Device.DEFAULT during tinygrad import. Apply an
+# explicit CLI device early so model weights and input tensors cannot diverge.
+if "--cpu" in sys.argv: os.environ["DEV"]="CPU"
+for index,argument in enumerate(sys.argv):
+  if argument == "--device" and index+1 < len(sys.argv): os.environ["DEV"]=sys.argv[index+1]
+  elif argument.startswith("--device="): os.environ["DEV"]=argument.split("=",1)[1]
+
 from tinygrad import Device, Tensor, dtypes
 from tinygrad.nn.state import get_state_dict
 
@@ -47,7 +54,10 @@ def main():
   parser.add_argument("--prompt",default="tell me a story about paris")
   parser.add_argument("--max-tokens",type=int,default=64)
   parser.add_argument("--output-dir",type=Path,required=True)
-  parser.add_argument("--device",default=Device.DEFAULT)
+  device=parser.add_mutually_exclusive_group()
+  device.add_argument("--device",dest="device")
+  device.add_argument("--cpu",action="store_const",const="CPU",dest="device")
+  parser.set_defaults(device=Device.DEFAULT)
   args=parser.parse_args()
   if args.max_tokens < 1: raise ValueError("--max-tokens must be positive")
   tokenizer_path=args.tokenizer or args.model.parent/"tokenizer.model"
@@ -56,7 +66,8 @@ def main():
   prompt_tokens=[tokenizer.bos_id,*tokenizer.encode(args.prompt)]
   required_context=len(prompt_tokens)+args.max_tokens
 
-  command=(f"DEV={args.device} python examples/dfloat_attest_llama.py --model {args.model} "
+  device_option="--cpu" if args.device == "CPU" else f"--device {args.device}"
+  command=(f"python examples/dfloat_attest_llama.py {device_option} --model {args.model} "
            f"--tokenizer {tokenizer_path} --prompt {json.dumps(args.prompt)} --max-tokens {args.max_tokens} "
            f"--output-dir {args.output_dir}")
   atomic_write(args.output_dir/"command.txt",command+"\n")
@@ -69,6 +80,8 @@ def main():
   storage={name:value.dtype for name,value in persistent.items() if name != "freqs_cis" and "cache_kv" not in name}
   unexpected={name:str(dtype) for name,dtype in storage.items() if dtype != dtypes.float16}
   if unexpected: raise RuntimeError(f"non-FP16 persistent model storage: {unexpected}")
+  wrong_device={name:value.device for name,value in persistent.items() if value.device != args.device}
+  if wrong_device: raise RuntimeError(f"persistent tensors not on requested {args.device} device: {wrong_device}")
   metadata:dict[str,object]={"model_file":args.model.name,"model_file_sha256":file_sha256(args.model),
     "tokenizer_file":tokenizer_path.name,"tokenizer_sha256":file_sha256(tokenizer_path),
     "prompt":args.prompt,"prompt_tokens":prompt_tokens,"max_generated_tokens":args.max_tokens,

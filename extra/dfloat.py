@@ -82,7 +82,7 @@ def convert_state_dict_storage(state:dict[str,Tensor], dtype=dtypes.float16, dev
       value=t.cast(dtype).contiguous()
       if device is not None: value=value.to(device).realize()
       converted[key]=value
-      weight_progress.set_description(f"realizing compact weights ({GlobalCounters.mem_used/1e9:.2f} GB GPU)")
+      weight_progress.set_description(f"realizing compact weights ({GlobalCounters.mem_used/1e9:.2f} GB resident)")
       weight_progress.update(1)
     if (m:=re.match(r"layers\.(\d+)\.",name)) is not None:
       layer=int(m.group(1))

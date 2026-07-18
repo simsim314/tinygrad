@@ -99,7 +99,7 @@ The most important current checks are:
 Generate 64 greedy tokens and checkpoint the attestation after every token:
 
 ```sh
-DEV=CUDA python examples/dfloat_attest_llama.py \
+python examples/dfloat_attest_llama.py --device CUDA \
   --model /mnt/pacer/ai-models/tinygrad/llama3-1b-instruct/Llama-3.2-1B-Instruct-Q6_K.gguf \
   --tokenizer /mnt/pacer/ai-models/tinygrad/llama3-1b-instruct/tokenizer.model \
   --prompt "tell me a story about paris" \
@@ -119,6 +119,18 @@ python examples/dfloat_verify_attestation.py \
 Re-execution on another machine is the stronger check: run the same command
 with identical model/tokenizer bytes, then compare `run_root` and
 `document_sha256`.
+
+For a CPU comparison, replace `--device CUDA` with `--cpu` and use a separate
+output directory. The runner applies the requested device before tinygrad is
+imported and rejects mixed-device persistent tensors:
+
+```sh
+python examples/dfloat_attest_llama.py --cpu \
+  --model /mnt/pacer/ai-models/tinygrad/llama3-1b-instruct/Llama-3.2-1B-Instruct-Q6_K.gguf \
+  --tokenizer /mnt/pacer/ai-models/tinygrad/llama3-1b-instruct/tokenizer.model \
+  --prompt "Paris" --max-tokens 10 \
+  --output-dir /mnt/pacer/ai-models/tinygrad/attestations-cpu/paris-simple-10
+```
 
 Useful JSON fields are:
 
