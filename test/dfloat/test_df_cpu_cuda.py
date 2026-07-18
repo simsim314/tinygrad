@@ -4,10 +4,12 @@ from tinygrad import Context, Tensor, dtypes
 from tinygrad.nn.state import get_state_dict, load_state_dict
 from extra.dfloat import convert_state_dict_df16, precompute_freqs_cis_df16
 from extra.dfloat_attestation import AttestationRecorder, AttestationSession
+from extra.dfloat_attestation_fast import FastAttestationSession, sample_tensor_256, tensor_xor_sketch_256, verify_fast_artifact
 from extra.dfloat_attestation_schema import reduction_plan, residual_plan
 from extra.dfloat_attestation_ops import attested_matmul, attested_rmsnorm, attested_softmax, reduction_frontiers
 from extra.dfloat_attestation_schema import matmul_plan, rmsnorm_plan, softmax_plan
-from extra.dfloat_attested_llama import attest_dense_llama_forward, attest_greedy_selection
+from extra.dfloat_attested_llama import (attest_dense_llama_forward, attest_greedy_selection,
+  fast_attest_dense_llama_forward, fast_attest_greedy_selection)
 from extra.models.llama import Transformer
 from tinygrad.uop import Ops
 
@@ -55,6 +57,19 @@ class TestDFCPUCUDA(unittest.TestCase):
       results.append((total.bitcast(dtypes.int32).numpy().tolist(),midpoint.bitcast(dtypes.int32).numpy().tolist()))
     self.assertEqual(results[0],results[1])
     self.assertEqual(results[0],(reference[0],levels[plan.witness_level]))
+
+  def test_fast_tensor_sample_and_xor_sketch(self):
+    previous=bytes(range(32))
+    values=[1,2,3,4,5,6,7,8,9,10]
+    results=[]
+    for device in ("CPU","CUDA"):
+      tensor=Tensor(values,dtype=dtypes.int32,device=device)
+      results.append((sample_tensor_256(tensor,previous),tensor_xor_sketch_256(tensor,previous)))
+    self.assertEqual(results[0],results[1])
+    self.assertEqual(results[0][0][1],(6,2,8,4,0,6,2,8))
+    self.assertEqual(results[0][1].hex(),"0000000600000007000000080000000100000002000000030000000d0000000f")
+    changed=Tensor(values[:-1]+[11],dtype=dtypes.int32,device="CPU")
+    self.assertNotEqual(tensor_xor_sketch_256(changed,previous),results[0][1])
 
   def test_df16_transcendentals(self):
     values=[-655360,-589824,-98305,-98304,-65537,-65536,-1,0,1,65535,65536,98304,589824,655360]
@@ -168,6 +183,39 @@ class TestDFCPUCUDA(unittest.TestCase):
       logits,recorder=attest_dense_llama_forward(model,tokens,session=session)
       selected=attest_greedy_selection(logits,recorder,emitted_token_bytes=b"llama")
       artifacts.append((selected,session.artifact({"model":"test-llama","prompt_tokens":[1,7,3]},"llama")))
+    self.assertEqual(artifacts[0],artifacts[1])
+
+  def test_one_block_fast_selection_artifact(self):
+    args=dict(dim=8,hidden_dim=16,n_heads=2,n_layers=2,norm_eps=1e-5,vocab_size=32,
+              n_kv_heads=2,max_context=8,jit=False,disable_kv_cache=False)
+    with Context(DEV="CPU"):
+      Tensor.manual_seed(1357)
+      base=Transformer(**args)
+      state={k:v for k,v in get_state_dict(base).items() if k != "freqs_cis"}
+    artifacts=[]
+    for device in ("CPU","CUDA"):
+      with Context(DEV=device):
+        ordinary,model=Transformer(**args),Transformer(**args)
+        converted=convert_state_dict_df16(state,device=device)
+        load_state_dict(ordinary,converted,verbose=False,strict=False)
+        load_state_dict(model,converted,verbose=False,strict=False)
+        ordinary.freqs_cis=precompute_freqs_cis_df16(4,16,10000,device)
+        model.freqs_cis=precompute_freqs_cis_df16(4,16,10000,device)
+        session=FastAttestationSession()
+        selected=[]
+        for position,token in enumerate((1,7,3,5)):
+          token_tensor=Tensor([[token]],dtype=dtypes.int32,device=device).realize()
+          expected=ordinary.forward(token_tensor,position,math.nan,0,0.0,0.0,0.0).realize()
+          logits,recorder=fast_attest_dense_llama_forward(model,token_tensor,step=position,start_pos=position,session=session)
+          self.assertEqual(logits.bitcast(dtypes.int32).numpy().tolist(),expected.bitcast(dtypes.int32).numpy().tolist())
+          selected.append(fast_attest_greedy_selection(logits,recorder))
+          self.assertEqual(len(recorder.layers),args["n_layers"])
+          self.assertIs(recorder.layers[-1].root,recorder.final_root_device)
+        self.assertGreaterEqual(model._dfloat_token_trace_jit.cnt,3)
+        artifact=session.artifact({"model":"test-llama","prompt_tokens":[1,7,3,5],
+          "attestation":"transformer-layer-output-xor-sha256-v3"},"llama")
+        self.assertTrue(verify_fast_artifact(artifact))
+        artifacts.append((selected,artifact))
     self.assertEqual(artifacts[0],artifacts[1])
 
   def test_two_token_kv_attestation(self):

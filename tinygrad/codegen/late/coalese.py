@@ -105,7 +105,9 @@ def memory_coalesing(sink:UOp, ctx:Renderer) -> UOp:
   for u in sink.toposort():
     # TODO: this should handle images too, it's just memory coalesing
     if u.op in {Ops.LOAD, Ops.STORE}:
-      assert len(u.src) == (2 if u.op is Ops.STORE else 1), "memory coalesing does not support gated loads/stores"
+      # Gated memory operations are lowered to control flow after this pass. They cannot participate in
+      # vector coalescing, but must not prevent unrelated ordinary loads/stores in the same kernel from coalescing.
+      if len(u.src) != (2 if u.op is Ops.STORE else 1): continue
       assert u.src[0].op is Ops.INDEX, f"memory coalesing should be on INDEX, not {u.src[0].op}"
       buf, idx_u = u.src[0].src
       if buf.addrspace == AddrSpace.REG: continue

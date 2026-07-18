@@ -429,6 +429,9 @@ def verify_artifact(document:Mapping[str,object]) -> bool:
   Tensor roots commit raw values which are intentionally not embedded in JSON.
   Re-execution verification compares those roots or the final document hash.
   """
+  if document.get("version") in (2,3):
+    from extra.dfloat_attestation_fast import verify_fast_artifact
+    return verify_fast_artifact(document)
   claimed_document=_digest_from_json(document.get("document_sha256"),"document_sha256")
   unsigned=dict(document)
   del unsigned["document_sha256"]
