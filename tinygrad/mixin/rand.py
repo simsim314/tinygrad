@@ -316,12 +316,13 @@ class RandMixin(OpMixin):
       value = value.repeat_interleave(int(self.shape[-3] // value.shape[-3]), dim=-3)
 
     q = self
-    qk = q.matmul(key.transpose(-2,-1), dtype=least_upper_dtype(q.dtype, key.dtype, dtypes.float32)) / math.sqrt(q.shape[-1])
+    acc_dtype = dtypes.df32 if q.dtype in dtypes.dfloats or key.dtype in dtypes.dfloats else least_upper_dtype(q.dtype,key.dtype,dtypes.float32)
+    qk = q.matmul(key.transpose(-2,-1), dtype=acc_dtype) / math.sqrt(q.shape[-1])
     # handle attention mask
     if is_causal:
       if attn_mask is not None: raise RuntimeError("cannot set attn_mask when is_causal=True")
       attn_mask = qk.const_like(1).cast(dtypes.bool).tril()
     if attn_mask is not None:
-      if attn_mask.dtype == dtypes.bool: attn_mask = attn_mask.where(0, -float("inf"))
+      if attn_mask.dtype == dtypes.bool: attn_mask = attn_mask.where(qk.const_like(0),qk.const_like(-float("inf")))
       qk = qk + attn_mask
     return qk.cast(self.dtype).softmax(-1).dropout(dropout_p) @ value
