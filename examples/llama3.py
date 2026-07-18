@@ -54,13 +54,13 @@ def concat_weights(models, device=None):
     return lazy_tensors[0].cat(*lazy_tensors[1:], dim=axis)
   return {name: convert(name) for name in {name: None for model in models for name in model}}
 
-def load(fn:str):
+def load(fn:str, gguf_device=None):
   if fn.endswith('.index.json'):
     with open(fn) as fp: weight_map = json.load(fp)['weight_map']
     parts = {n: load(str(Path(fn).parent / Path(n).name)) for n in set(weight_map.values())}
     return {k: parts[n][k] for k, n in weight_map.items()}
   elif fn.endswith(".gguf"):
-    gguf_tensor = Tensor.empty(os.stat(fn).st_size, dtype=dtypes.uint8, device=f"disk:{fn}").to(Device.DEFAULT)
+    gguf_tensor = Tensor.empty(os.stat(fn).st_size, dtype=dtypes.uint8, device=f"disk:{fn}").to(gguf_device or Device.DEFAULT)
     return gguf_load(gguf_tensor)[1]
   elif fn.endswith(".safetensors"):
     return safe_load(fn)
@@ -199,9 +199,13 @@ MODEL_PARAMS = {
     "files": 191
   },
 }
-def build_transformer(model_path: Path, model_size="8B", quantize=None, scale_dtype=dtypes.float16, device=None, max_context=8192, load_weights=True):
+def build_transformer(model_path: Path, model_size="8B", quantize=None, scale_dtype=dtypes.float16, device=None, max_context=8192,
+                      load_weights=True, dfloat=False, low_memory=False):
   # build model
-  if quantize == "int8": linear, embedding, quantize_embeds = Int8Linear, Int8Embedding, True
+  if dfloat:
+    from extra.dfloat import DF16Linear, DF16Embedding
+    linear,embedding,quantize_embeds=DF16Linear,DF16Embedding,False
+  elif quantize == "int8": linear, embedding, quantize_embeds = Int8Linear, Int8Embedding, True
   elif quantize == "nf4": linear, embedding, quantize_embeds = NF4Linear(64), nn.Embedding, False
   elif quantize == "fp8": linear, embedding, quantize_embeds = FP8Linear, nn.Embedding, False
   else: linear, embedding, quantize_embeds = nn.Linear, nn.Embedding, False
@@ -216,12 +220,17 @@ def build_transformer(model_path: Path, model_size="8B", quantize=None, scale_dt
       elif (model_path / "model.safetensors").exists(): weights = load(str(model_path / "model.safetensors"))
       else: weights = concat_weights([load(str(model_path / f"consolidated.{i:02d}.pth")) for i in range(MODEL_PARAMS[model_size]["files"])], device[0] if isinstance(device, tuple) else device)
     else:
-      weights = load(str(model_path))
+      weights = load(str(model_path), gguf_device="CPU" if dfloat or low_memory else None)
     if "model.embed_tokens.weight" in weights:
       weights = convert_from_huggingface(weights, MODEL_PARAMS[model_size]["args"]["n_layers"], MODEL_PARAMS[model_size]["args"]["n_heads"], MODEL_PARAMS[model_size]["args"]["n_kv_heads"])
     elif "token_embd.weight" in weights:
       weights = convert_from_gguf(weights, MODEL_PARAMS[model_size]["args"]["n_layers"])
     weights = fix_bf16(weights)
+    if dfloat:
+      from extra.dfloat import convert_state_dict_storage
+      target=device or Device.DEFAULT
+      weights=convert_state_dict_storage(weights,dtype=dtypes.float16,device=target,verbose=True)
+      model.freqs_cis=model.freqs_cis.cast(dtypes.float16).to(target).realize()
 
     with Context(BEAM=0):
       # quantize
@@ -242,8 +251,12 @@ def build_transformer(model_path: Path, model_size="8B", quantize=None, scale_dt
           elif 'output.weight' in k: v.shard_(device, axis=0)
           else: v.shard_(device, axis=None)
 
+      # Tied Llama embeddings must share storage; duplicating this matrix costs ~1 GB for 1B DF16.
+      tied_output = weights.get("output.weight") is weights.get("tok_embeddings.weight")
+      if tied_output: del weights["output.weight"]
       # replace weights in model
       load_state_dict(model, weights, strict=False, consume=True)
+      if tied_output: model.output.weight = model.tok_embeddings.weight
   return model
 
 # default settings
@@ -289,6 +302,8 @@ if __name__ == "__main__":
   parser.add_argument("--benchmark", action="store_true", help="Run a benchmark")
   parser.add_argument("--timing", action="store_true", help="Print timing per token")
   parser.add_argument("--profile", action="store_true", help="Output profile data")
+  parser.add_argument("--dfloat", action="store_true", help="Use deterministic DF16/DF32 arithmetic")
+  parser.add_argument("--low_memory", action="store_true", help="Keep GGUF source on CPU and preserve tied weight storage")
   args = parser.parse_args()
 
   # download_model is the default without a model passed in
@@ -324,7 +339,8 @@ if __name__ == "__main__":
     return encode_role(role) + tokenizer.encode(content.strip()) + [tokenizer.special_tokens["<|eot_id|>"]]
 
   device = tuple(f"{Device.DEFAULT}:{i}" for i in range(args.shard)) if args.shard > 1 else Device.DEFAULT
-  model = build_transformer(args.model, model_size=args.size, quantize=args.quantize, device=device)
+  model = build_transformer(args.model, model_size=args.size, quantize=args.quantize, device=device,
+                            max_context=512 if args.dfloat else 8192, dfloat=args.dfloat, low_memory=args.low_memory or args.dfloat)
   param_bytes = sum(x.nbytes() for x in get_parameters(model))
 
   if not args.no_api and not args.benchmark:

@@ -31,6 +31,12 @@ class TestDFloatDType(unittest.TestCase):
     self.assertEqual(to_storage_scalar(-(2**-17), dtypes.df16), -1)
     self.assertEqual(to_storage_scalar(2**-33, dtypes.df32), 1)
 
+  def test_runtime_ieee_casts(self):
+    values=[0.0,1.0,1.5,-2.25,2**-17,-2**-17,40000.0,-40000.0]
+    expected=[0,65536,98304,-147456,1,-1,2147483647,-2147483648]
+    for dtype in (dtypes.float16,dtypes.bfloat16,dtypes.float32):
+      self.assertEqual(bits16(Tensor(values,dtype=dtype,device=DEVICE).cast(dtypes.df16)),expected)
+
 class TestDFloatCUDA(unittest.TestCase):
   def test_elementwise_raw_bits(self):
     a=raw16([65536,98304,-131072,2147483647]); b=raw16([131072,-131072,32768,1])

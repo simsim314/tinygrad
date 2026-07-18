@@ -448,6 +448,9 @@ class CUDARenderer(CStyleLanguage):
     (UPat(Ops.WHERE, dtype=dtypes.dfloats, src=(UPat.var("p"), UPat.var("a"), UPat.var("b"))), lambda ctx,p,a,b: f"({ctx[p]}?{ctx[a]}:{ctx[b]})"),
     (UPat(Ops.CAST, dtype=dtypes.df32, src=(UPat.var("a", dtypes.df16),)), lambda ctx,a: f"df16_to_df32({ctx[a]})"),
     (UPat(Ops.CAST, dtype=dtypes.df16, src=(UPat.var("a", dtypes.df32),)), lambda ctx,a: f"df32_to_df16({ctx[a]})"),
+    (UPat(Ops.CAST, dtype=dtypes.df16, src=(UPat.var("a", dtypes.float),)), lambda ctx,a: f"df16_from_f32_bits(__float_as_uint({ctx[a]}))"),
+    (UPat(Ops.CAST, dtype=dtypes.df16, src=(UPat.var("a", dtypes.half),)), lambda ctx,a: f"df16_from_f16_bits(tg_bitcast<unsigned short>({ctx[a]}))"),
+    (UPat(Ops.CAST, dtype=dtypes.df16, src=(UPat.var("a", dtypes.bfloat16),)), lambda ctx,a: f"df16_from_bf16_bits(tg_bitcast<unsigned short>({ctx[a]}))"),
     (UPat(GroupOp.ALU, dtype=dtypes.dfloats, name="x"), lambda ctx,x: unsupported_dfloat_render(x)),
     (UPat(Ops.CAST, dtype=dtypes.dfloats, name="x"), lambda ctx,x: unsupported_dfloat_render(x)),
     (UPat(Ops.CAST, src=(UPat.var("a", dtypes.dfloats),), name="x"), lambda ctx,x,a: unsupported_dfloat_render(x)),
@@ -475,6 +478,10 @@ __device__ __forceinline__ df16 df16_sub(df16 a,df16 b){return df_sat_i32((df32)
 __device__ __forceinline__ df16 df16_neg(df16 a){return a==(-2147483647-1)?2147483647:-a;}
 __device__ __forceinline__ df16 df16_mul(df16 a,df16 b){return df_sat_i32(df_rshift16((df32)a*b));}
 __device__ __forceinline__ df16 df16_div(df16 a,df16 b){if(!b)return a>=0?2147483647:(-2147483647-1);return df_sat_i32(((df32)a*65536LL)/b);}
+__device__ __forceinline__ df16 df16_from_parts(unsigned int sign,unsigned long long mant,int shift){unsigned long long mag;if(shift>=0){if(shift>=32||mant>(0x80000000ULL>>shift))return sign?(-2147483647-1):2147483647;mag=mant<<shift;}else{unsigned int r=(unsigned int)-shift;mag=r>=64?0:(mant+(1ULL<<(r-1)))>>r;}if(sign)return mag>=0x80000000ULL?(-2147483647-1):-(df16)mag;return mag>2147483647ULL?2147483647:(df16)mag;}
+__device__ __forceinline__ df16 df16_from_f32_bits(unsigned int u){unsigned int s=u>>31,e=(u>>23)&255U,f=u&0x7fffffU;if(e==255U)return f?0:(s?(-2147483647-1):2147483647);if(!e&&!f)return 0;return df16_from_parts(s,e?f|0x800000U:f,(e?(int)e-127:-126)-23+16);}
+__device__ __forceinline__ df16 df16_from_f16_bits(unsigned short u){unsigned int s=u>>15,e=(u>>10)&31U,f=u&1023U;if(e==31U)return f?0:(s?(-2147483647-1):2147483647);if(!e&&!f)return 0;return df16_from_parts(s,e?f|1024U:f,(e?(int)e-15:-14)-10+16);}
+__device__ __forceinline__ df16 df16_from_bf16_bits(unsigned short u){unsigned int s=u>>15,e=(u>>7)&255U,f=u&127U;if(e==255U)return f?0:(s?(-2147483647-1):2147483647);if(!e&&!f)return 0;return df16_from_parts(s,e?f|128U:f,(e?(int)e-127:-126)-7+16);}
 __device__ __forceinline__ df32 df16_to_df32(df16 x){return (df32)x*65536LL;}
 __device__ __forceinline__ df16 df32_to_df16(df32 x){return df_sat_i32(df_rshift16(x));}
 __device__ __forceinline__ df32 df32_add(df32 a,df32 b){if(b>0&&a>9223372036854775807LL-b)return 9223372036854775807LL;if(b<0&&a<(-9223372036854775807LL-1LL)-b)return (-9223372036854775807LL-1LL);return a+b;}

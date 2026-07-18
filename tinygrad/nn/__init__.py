@@ -303,7 +303,9 @@ class RMSNorm:
     # Deterministic fixed point widens before squaring and narrows once after normalization.
     work = x.cast(dtypes.df32) if x.dtype in dtypes.dfloats else x.float()
     x = self._norm(work).cast(x.dtype)
-    return x if self.weight is None else x * self.weight
+    if self.weight is None: return x
+    weight = self.weight.cast(x.dtype) if x.dtype in dtypes.dfloats and self.weight.dtype not in dtypes.dfloats else self.weight
+    return x * weight
 
 from tinygrad.uop.ops import UOp, KernelInfo, Ops, AxisType
 def _embedding_bwd(grad_emb:UOp, call:UOp) -> tuple:
