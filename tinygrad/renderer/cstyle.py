@@ -245,6 +245,43 @@ class CStyleLanguage(Renderer):
     return (name, kernel, list(bufs.values()))
   def render(self, uops:list[UOp]) -> str: return self.render_kernel(*self._render(uops), uops)
 
+DFLOAT_CPU_HEADER = r'''typedef int df16; typedef long long df32;
+static inline df16 df_sat_i32(df32 x){return x>2147483647LL?2147483647:x<(-2147483647LL-1LL)?(-2147483647-1):(df16)x;}
+static inline unsigned long long df_abs64(df32 x){unsigned long long u=(unsigned long long)x;return x<0?~u+1ULL:u;}
+static inline df32 df_rshift16(df32 x){unsigned long long m=df_abs64(x);return x>=0?(df32)((m+32768ULL)>>16):-(df32)((m+32767ULL)>>16);}
+static inline df16 df16_add(df16 a,df16 b){return df_sat_i32((df32)a+b);}
+static inline df16 df16_sub(df16 a,df16 b){return df_sat_i32((df32)a-b);}
+static inline df16 df16_neg(df16 a){return a==(-2147483647-1)?2147483647:-a;}
+static inline df16 df16_mul(df16 a,df16 b){return df_sat_i32(df_rshift16((df32)a*b));}
+static inline df16 df16_div(df16 a,df16 b){if(!b)return a>=0?2147483647:(-2147483647-1);return df_sat_i32(((df32)a*65536LL)/b);}
+static inline df16 df16_from_parts(unsigned int sign,unsigned long long mant,int shift){unsigned long long mag;if(shift>=0){if(shift>=32||mant>(0x80000000ULL>>shift))return sign?(-2147483647-1):2147483647;mag=mant<<shift;}else{unsigned int r=(unsigned int)-shift;mag=r>=64?0:(mant+(1ULL<<(r-1)))>>r;}if(sign)return mag>=0x80000000ULL?(-2147483647-1):-(df16)mag;return mag>2147483647ULL?2147483647:(df16)mag;}
+static inline df16 df16_from_f32_bits(unsigned int u){unsigned int s=u>>31,e=(u>>23)&255U,f=u&0x7fffffU;if(e==255U)return f?0:(s?(-2147483647-1):2147483647);if(!e&&!f)return 0;return df16_from_parts(s,e?f|0x800000U:f,(e?(int)e-127:-126)-23+16);}
+static inline df16 df16_from_f16_bits(unsigned short u){unsigned int s=u>>15,e=(u>>10)&31U,f=u&1023U;if(e==31U)return f?0:(s?(-2147483647-1):2147483647);if(!e&&!f)return 0;return df16_from_parts(s,e?f|1024U:f,(e?(int)e-15:-14)-10+16);}
+static inline df16 df16_from_bf16_bits(unsigned short u){unsigned int s=u>>15,e=(u>>7)&255U,f=u&127U;if(e==255U)return f?0:(s?(-2147483647-1):2147483647);if(!e&&!f)return 0;return df16_from_parts(s,e?f|128U:f,(e?(int)e-127:-126)-7+16);}
+static inline df32 df16_to_df32(df16 x){return (df32)x*65536LL;}
+static inline df16 df32_to_df16(df32 x){return df_sat_i32(df_rshift16(x));}
+static inline df32 df32_add(df32 a,df32 b){if(b>0&&a>9223372036854775807LL-b)return 9223372036854775807LL;if(b<0&&a<(-9223372036854775807LL-1LL)-b)return (-9223372036854775807LL-1LL);return a+b;}
+static inline df32 df32_sub(df32 a,df32 b){if(b>0&&a<(-9223372036854775807LL-1LL)+b)return (-9223372036854775807LL-1LL);if(b<0&&a>9223372036854775807LL+b)return 9223372036854775807LL;return a-b;}
+static inline df32 df32_neg(df32 a){return a==(-9223372036854775807LL-1LL)?9223372036854775807LL:-a;}
+static inline df32 df32_mul(df32 a,df32 b){
+  _Bool neg=(a<0)^(b<0);unsigned long long ua=df_abs64(a),ub=df_abs64(b);unsigned __int128 p=(unsigned __int128)ua*ub+(neg?0x7fffffffULL:0x80000000ULL),q=p>>32;
+  if(!neg)return q>0x7fffffffffffffffULL?9223372036854775807LL:(df32)q;
+  if(q>0x8000000000000000ULL)return (-9223372036854775807LL-1LL);return (df32)(~(unsigned long long)q+1ULL);
+}
+static inline df32 df32_div(df32 a,df32 b){
+  if(!b)return a>=0?9223372036854775807LL:(-9223372036854775807LL-1LL);
+  _Bool neg=(a<0)^(b<0),ov=0;unsigned long long ua=df_abs64(a),ub=df_abs64(b),rem=0,q=0;
+  for(int i=95;i>=0;--i){unsigned long long bit=i>=32?((ua>>(i-32))&1ULL):0ULL;rem=(rem<<1)|bit;if(rem>=ub){rem-=ub;if(i>=64)ov=1;else q|=1ULL<<i;}}
+  if(ov||(!neg&&q>0x7fffffffffffffffULL)||(neg&&q>0x8000000000000000ULL))return neg?(-9223372036854775807LL-1LL):9223372036854775807LL;
+  return neg?(df32)(~q+1ULL):(df32)q;
+}
+static inline df32 df32_sqrt(df32 x){
+  if(x<=0)return 0;unsigned long long lo=0,hi=1ULL<<48;unsigned __int128 n=(unsigned __int128)(unsigned long long)x<<32;
+  while(lo+1<hi){unsigned long long m=lo+((hi-lo)>>1);if((unsigned __int128)m*m<=n)lo=m;else hi=m;}return (df32)lo;
+}
+static inline df16 df16_sqrt(df16 x){if(x<=0)return 0;unsigned long long n=((unsigned long long)(unsigned int)x)<<16,r=0,b=1ULL<<62;while(b>n)b>>=2;while(b){if(n>=r+b){n-=r+b;r=(r>>1)+b;}else r>>=1;b>>=2;}return r>2147483647ULL?2147483647:(df16)r;}
+'''
+
 class ClangRenderer(CStyleLanguage):
   float4 = "(float4)"
   float4_style = ('{', '}')
@@ -257,6 +294,36 @@ class ClangRenderer(CStyleLanguage):
 
   # language options
   buffer_suffix = " restrict"
+  string_rewrite = PatternMatcher([
+    (UPat(Ops.CONST, dtype=dtypes.dfloats, name="x"), lambda ctx,x: str(to_storage_scalar(x.arg, x.dtype))),
+    (UPat(Ops.ADD, dtype=dtypes.df16, src=(UPat.var("a"), UPat.var("b"))), lambda ctx,a,b: f"df16_add({ctx[a]},{ctx[b]})"),
+    (UPat(Ops.SUB, dtype=dtypes.df16, src=(UPat.var("a"), UPat.var("b"))), lambda ctx,a,b: f"df16_sub({ctx[a]},{ctx[b]})"),
+    (UPat(Ops.MUL, dtype=dtypes.df16, src=(UPat.var("a"), UPat.var("b"))), lambda ctx,a,b: f"df16_mul({ctx[a]},{ctx[b]})"),
+    (UPat(Ops.FDIV, dtype=dtypes.df16, src=(UPat.var("a"), UPat.var("b"))), lambda ctx,a,b: f"df16_div({ctx[a]},{ctx[b]})"),
+    (UPat(Ops.NEG, dtype=dtypes.df16, src=(UPat.var("a"),)), lambda ctx,a: f"df16_neg({ctx[a]})"),
+    (UPat(Ops.RECIPROCAL, dtype=dtypes.df16, src=(UPat.var("a"),)), lambda ctx,a: f"df16_div(65536,{ctx[a]})"),
+    (UPat(Ops.SQRT, dtype=dtypes.df16, src=(UPat.var("a"),)), lambda ctx,a: f"df16_sqrt({ctx[a]})"),
+    (UPat(Ops.ADD, dtype=dtypes.df32, src=(UPat.var("a"), UPat.var("b"))), lambda ctx,a,b: f"df32_add({ctx[a]},{ctx[b]})"),
+    (UPat(Ops.SUB, dtype=dtypes.df32, src=(UPat.var("a"), UPat.var("b"))), lambda ctx,a,b: f"df32_sub({ctx[a]},{ctx[b]})"),
+    (UPat(Ops.MUL, dtype=dtypes.df32, src=(UPat.var("a"), UPat.var("b"))), lambda ctx,a,b: f"df32_mul({ctx[a]},{ctx[b]})"),
+    (UPat(Ops.FDIV, dtype=dtypes.df32, src=(UPat.var("a"), UPat.var("b"))), lambda ctx,a,b: f"df32_div({ctx[a]},{ctx[b]})"),
+    (UPat(Ops.NEG, dtype=dtypes.df32, src=(UPat.var("a"),)), lambda ctx,a: f"df32_neg({ctx[a]})"),
+    (UPat(Ops.RECIPROCAL, dtype=dtypes.df32, src=(UPat.var("a"),)), lambda ctx,a: f"df32_div(4294967296LL,{ctx[a]})"),
+    (UPat(Ops.SQRT, dtype=dtypes.df32, src=(UPat.var("a"),)), lambda ctx,a: f"df32_sqrt({ctx[a]})"),
+    (UPat(Ops.MAX, dtype=dtypes.dfloats, src=(UPat.var("a"), UPat.var("b"))), lambda ctx,a,b: f"({ctx[a]}>{ctx[b]}?{ctx[a]}:{ctx[b]})"),
+    (UPat(Ops.WHERE, dtype=dtypes.dfloats, src=(UPat.var("p"), UPat.var("a"), UPat.var("b"))), lambda ctx,p,a,b: f"({ctx[p]}?{ctx[a]}:{ctx[b]})"),
+    (UPat(Ops.CAST, dtype=dtypes.df32, src=(UPat.var("a", dtypes.df16),)), lambda ctx,a: f"df16_to_df32({ctx[a]})"),
+    (UPat(Ops.CAST, dtype=dtypes.df16, src=(UPat.var("a", dtypes.df32),)), lambda ctx,a: f"df32_to_df16({ctx[a]})"),
+    (UPat(Ops.CAST, dtype=dtypes.df16, src=(UPat.var("a", dtypes.float),)),
+     lambda ctx,a: f"df16_from_f32_bits(__builtin_bit_cast(unsigned int,(float)({ctx[a]})))"),
+    (UPat(Ops.CAST, dtype=dtypes.df16, src=(UPat.var("a", dtypes.half),)),
+     lambda ctx,a: f"df16_from_f16_bits(__builtin_bit_cast(unsigned short,(__fp16)({ctx[a]})))"),
+    (UPat(Ops.CAST, dtype=dtypes.df16, src=(UPat.var("a", dtypes.bfloat16),)),
+     lambda ctx,a: f"df16_from_bf16_bits(__builtin_bit_cast(unsigned short,(__bf16)({ctx[a]})))"),
+    (UPat(GroupOp.ALU, dtype=dtypes.dfloats, name="x"), lambda ctx,x: unsupported_dfloat_render(x)),
+    (UPat(Ops.CAST, dtype=dtypes.dfloats, name="x"), lambda ctx,x: unsupported_dfloat_render(x)),
+    (UPat(Ops.CAST, src=(UPat.var("a", dtypes.dfloats),), name="x"), lambda ctx,x,a: unsupported_dfloat_render(x)),
+  ]) + base_rewrite
   type_map = {dtypes.bool:"_Bool", dtypes.half:"__fp16"}
   code_for_op = {**({k:v for k,v in CStyleLanguage.code_for_op.items() if k not in [Ops.EXP2, Ops.SIN, Ops.LOG2, Ops.TRUNC, Ops.RECIPROCAL]}),
                  Ops.SQRT: lambda x,dtype: f"__builtin_sqrt({x})" if dtype == dtypes.float64 else f"__builtin_sqrtf({x})",
@@ -283,7 +350,7 @@ class ClangRenderer(CStyleLanguage):
   def _render_entry(self, function_name:str, bufs:list[tuple[str,tuple[UOp,bool]]]) -> str: return ""
 
   def render_kernel(self, function_name, kernel, bufs, uops, prefix=None) -> str:
-    defines = '\n'.join(self._render_defines(uops))
+    defines = '\n'.join(([DFLOAT_CPU_HEADER] if any(dt in dtypes.dfloats for dt,_ in uops_to_dtypes(uops)) else []) + self._render_defines(uops))
     return defines + "\n" + self._render_body(function_name, kernel, bufs, uops, prefix) + "\n" + self._render_entry(function_name, bufs)
 
   def supported_dtypes(self):
