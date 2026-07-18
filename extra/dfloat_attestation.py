@@ -306,6 +306,13 @@ class AttestationRecorder:
     self.step, self._tensor_index = step, 0
     self.tensors:list[TensorRecord]=[]
     self.modules:list[ModuleRecord]=[]
+    self.weights:dict[str,bytes]={}
+
+  def weight_reference(self, name:str, tensor) -> RootReference:
+    if name not in self.weights:
+      dtype,raw=tensor_dtype_id(tensor),tensor_raw_bytes(tensor)
+      self.weights[name]=weight_commitment(name=name,dtype=dtype,shape=tuple(int(x) for x in tensor.shape),data=raw)
+    return RootReference(self.weights[name])
 
   def commit_tensor(self, name:str, value, role:TensorRole=TensorRole.STATE) -> bytes:
     index=self._tensor_index
@@ -344,5 +351,6 @@ class AttestationRecorder:
   def json(self) -> dict[str, object]:
     boundaries=tuple(x.boundary_root for x in self.modules)
     return {"step":self.step,"tensors":[x.json() for x in self.tensors],"modules":[x.json() for x in self.modules],
+            "weights":{k:v.hex() for k,v in sorted(self.weights.items())},
             "ordered_boundary_root":ordered_root("DFAT-ORDERED-BOUNDARIES-V1",boundaries).hex(),
             "boundary_xor":xor_roots(boundaries).hex()}

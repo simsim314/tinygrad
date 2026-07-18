@@ -7,6 +7,7 @@ from extra.dfloat_attestation import AttestationRecorder
 from extra.dfloat_attestation_schema import residual_plan
 from extra.dfloat_attestation_ops import attested_matmul, attested_rmsnorm, attested_softmax
 from extra.dfloat_attestation_schema import matmul_plan, rmsnorm_plan, softmax_plan
+from extra.dfloat_attested_llama import attest_dense_llama_forward
 from extra.models.llama import Transformer
 
 
@@ -118,6 +119,25 @@ class TestDFCPUCUDA(unittest.TestCase):
       recorder.record_module(mm_plan,mm_values,input_names=("activation_input","weight_df16"),output_names=("output_df16",))
       recorder.record_module(norm_plan,norm_values,input_names=("input_df16",),output_names=("norm_output_df16",))
       recorder.record_module(soft_plan,soft_values,input_names=("scores_df16",),output_names=("probabilities_df16",))
+      results.append(recorder.json())
+    self.assertEqual(results[0],results[1])
+
+  def test_one_block_full_attestation(self):
+    args=dict(dim=8,hidden_dim=16,n_heads=2,n_layers=1,norm_eps=1e-5,vocab_size=32,
+              n_kv_heads=2,max_context=8,jit=False,disable_kv_cache=True)
+    with Context(DEV="CPU"):
+      Tensor.manual_seed(4321)
+      base=Transformer(**args)
+      state={k:v for k,v in get_state_dict(base).items() if k != "freqs_cis"}
+    results=[]
+    for device in ("CPU","CUDA"):
+      with Context(DEV=device): model=Transformer(**args)
+      load_state_dict(model,convert_state_dict_df16(state,device=device),verbose=False,strict=False)
+      model.freqs_cis=precompute_freqs_cis_df16(4,16,10000,device)
+      tokens=Tensor([[1,7,3]],dtype=dtypes.int32,device=device)
+      expected=model.forward(tokens,0,math.nan,0,0.0,0.0,0.0).realize()
+      logits,recorder=attest_dense_llama_forward(model,tokens)
+      self.assertEqual(logits.bitcast(dtypes.int32).numpy().tolist(),expected.bitcast(dtypes.int32).numpy().tolist())
       results.append(recorder.json())
     self.assertEqual(results[0],results[1])
 

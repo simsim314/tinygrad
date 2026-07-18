@@ -62,7 +62,7 @@ class ModulePlan:
 
 
 def embedding_plan(name:str="embedding") -> ModulePlan:
-  return ModulePlan(name,"embedding",("token_ids","selected_weight_f16","selected_weight_df16","gathered_df16","embedding_output"))
+  return ModulePlan(name,"embedding",("token_ids","embedding_weight_storage","selected_weight_df16","gathered_df16","embedding_output"))
 
 
 def rmsnorm_plan(name:str, width:int) -> ModulePlan:
@@ -117,7 +117,7 @@ def gate_product_plan(name:str) -> ModulePlan:
 
 
 def silu_plan(name:str) -> ModulePlan:
-  return ModulePlan(name,"silu",("input_df16","negated_df16","exp_scale_df16","exp2_df16","denominator_df16",
+  return ModulePlan(name,"silu",("input_df16","exp_argument_df16","exp2_df16","denominator_df16",
                                   "sigmoid_df16","wide_silu_product","silu_output_df16"))
 
 

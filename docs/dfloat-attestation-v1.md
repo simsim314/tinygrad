@@ -259,8 +259,8 @@ attestation cost.
 ### 5.2 Embedding lookup: 5 entries
 
 1. `token_ids`: canonical input token IDs and positions.
-2. `selected_weight_f16`: raw persistent FP16 rows selected by those IDs; the
-   full static embedding-weight root is also referenced.
+2. `embedding_weight_storage`: cached full persistent storage root; it is
+   referenced rather than rehashed on later token steps.
 3. `selected_weight_df16`: integer-only FP16-to-DF16 conversion result.
 4. `gathered_df16`: gathered rows before output layout materialization.
 5. `embedding_output`: contiguous DF16 tensor consumed by block zero.
@@ -398,16 +398,16 @@ and 5. `df16_output`.
 The wide intermediate and saturation decision are meaningful DF witnesses: a
 native floating operation does not naturally produce their exact integer state.
 
-### 5.11 SiLU: 8 entries
+### 5.11 SiLU: 7 entries
 
 1. `input_df16`.
-2. `negated_df16` used by sigmoid.
-3. `exp_scale_df16`: multiplication by pinned `1/log(2)`.
-4. `exp2_df16`: deterministic table/polynomial exponential result.
-5. `denominator_df16`: `1 + exp(-x)`.
-6. `sigmoid_df16`: deterministic reciprocal.
-7. `wide_silu_product`: widened `x * sigmoid(x)` before rounding/saturation.
-8. `silu_output_df16`.
+2. `exp_argument_df16`: direct multiplication by pinned `-1/log(2)`, matching
+   the actual tinygrad sigmoid graph without inventing a separate negation.
+3. `exp2_df16`: deterministic table/polynomial exponential result.
+4. `denominator_df16`: `1 + exp(-x)`.
+5. `sigmoid_df16`: deterministic reciprocal.
+6. `wide_silu_product`: widened `x * sigmoid(x)` before rounding/saturation.
+7. `silu_output_df16`.
 
 ### 5.12 One transformer block
 
