@@ -73,4 +73,12 @@ class TestDFloatCUDA(unittest.TestCase):
       got=bits16(x.softmax(-1));self.assertEqual(got,expected)
       for row in got:self.assertLessEqual(abs(sum(row)-65536),1)
 
+  def test_activation_family(self):
+    x=raw16([-524288,-196608,-65536,0,65536,196608,524288])
+    sig_expected=[21,3108,17625,32768,47910,62428,65515]
+    silu_expected=[-168,-9324,-17625,0,47910,187284,524120]
+    for _ in range(20):
+      self.assertEqual(bits16(x.sigmoid()),sig_expected)
+      self.assertEqual(bits16(x.silu()),silu_expected)
+
 if __name__ == "__main__": unittest.main()
