@@ -68,15 +68,16 @@ def convert_state_dict_storage(state:dict[str,Tensor], dtype=dtypes.float16, dev
       value=t.cast(dtype).contiguous()
       if device is not None: value=value.to(device).realize()
       converted[key]=value
-      weight_progress.update(1)
       weight_progress.set_description(f"realizing compact weights ({GlobalCounters.mem_used/1e9:.2f} GB GPU)")
+      weight_progress.update(1)
     if (m:=re.match(r"layers\.(\d+)\.",name)) is not None:
       layer=int(m.group(1))
       layer_done[layer]+=1
       if layer_done[layer] == layer_totals[layer]:
         layer_progress.update(1)
-        layer_progress.set_description(f"realized layer {layer+1}/{len(layer_totals)}")
     ret[name]=converted[key]
+  weight_progress.update(close=True)
+  layer_progress.update(close=True)
   return ret
 
 class DF16Linear:
