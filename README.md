@@ -1,4 +1,7 @@
-# Deterministic DF16/DF32 inference and attestation
+<h1 align="center">Deterministic DF16/DF32 inference and attestation</h1>
+
+<p align="center"><img src="attestation.png" alt="Deterministic LLM attestation process" width="500"></p>
+
 ## Main idea
 
 Indeterminism in LLMs—especially local, open-weight models—limits the range of applications in which their outputs can be trusted. A deterministic LLM combined with a fixed policy prompt could formally attest that a submitted input satisfies a defined policy.
