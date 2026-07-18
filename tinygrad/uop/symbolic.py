@@ -249,7 +249,7 @@ symbolic = symbolic_simple+commutative+PatternMatcher([
   #((UPat.var("x")+UPat.var("z")).maximum(UPat.var("y")+UPat.var("z")), lambda x,y,z: x.maximum(y) + z),
   # ** two stage ALU folding **
   *((UPat.var("x").alu(op, UPat.cvar("c1")).alu(op, UPat.cvar("c2")).named("f"),
-     lambda f,x,c1,c2: x.alu(f.op,c1.alu(f.op,c2))) for op in GroupOp.Associative),
+     lambda f,x,c1,c2: x.alu(f.op,c1.alu(f.op,c2)) if not dtypes.is_dfloat(f.dtype) else None) for op in GroupOp.Associative),
   ((UPat.cvar("c0") + UPat.var("x")) < UPat.cvar("c1"), lambda x,c0,c1: x<(c1-c0)),  # c0 + x < c1 -> x < c1 - c0
   # (x//c1)//c2 -> x//(c1*c2) for c2>0
   ((UPat.var("x") // UPat.cvar("c1")) // UPat.cvar("c2"), lambda x,c1,c2: x//(c1*c2) if c2.vmin>0 else None),

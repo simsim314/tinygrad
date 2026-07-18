@@ -87,6 +87,9 @@ class dtypes:
   @staticmethod
   @functools.cache
   def is_float(x: DType) -> bool: return x in (dtypes.floats + (dtypes.weakfloat,))
+  @staticmethod
+  @functools.cache
+  def is_dfloat(x: DType) -> bool: return x in dtypes.dfloats
   @staticmethod # static methods on top, or bool in the type info will refer to dtypes.bool
   @functools.cache
   def is_int(x: DType) -> bool: return x in (dtypes.ints + (dtypes.weakint, dtypes.index))
@@ -134,6 +137,9 @@ class dtypes:
   bfloat16: Final[DType] = DType.new(13, 16, "__bf16", None)
   float32: Final[DType] = DType.new(14, 32, "float", 'f')
   float64: Final[DType] = DType.new(15, 64, "double", 'd')
+  # Logical deterministic fixed-point dtypes. fmt is their physical signed integer storage.
+  df16: Final[DType] = DType.new(16, 32, "df16", 'i')
+  df32: Final[DType] = DType.new(17, 64, "df32", 'q')
 
   # dtype aliases
   half = float16; float = float32; double = float64 # noqa: E702
@@ -146,7 +152,8 @@ class dtypes:
   fp8_ocp = (fp8e4m3, fp8e5m2)
   fp8_fnuz = (fp8e4m3fnuz, fp8e5m2fnuz)
   fp8s = fp8_ocp + fp8_fnuz
-  floats = fp8s + (float16, bfloat16, float32, float64)
+  dfloats = (df16, df32)
+  floats = fp8s + (float16, bfloat16, float32, float64) + dfloats
   int8s = (uint8, int8)
   int16s = (uint16, int16)
   int32s = (uint32, int32)
@@ -182,6 +189,10 @@ def _get_recursive_parents(dtype:DType) -> set[DType]:
   return set.union(*[_get_recursive_parents(d) for d in promo_lattice[dtype]], {dtype}) if dtype != dtypes.float64 else {dtypes.float64}
 @functools.cache
 def least_upper_dtype(*ds:DType) -> DType:
+  if any(dtypes.is_dfloat(d) for d in ds):
+    if any(d in dtypes.floats and not dtypes.is_dfloat(d) and d != dtypes.weakfloat for d in ds):
+      raise TypeError(f"DF dtype cannot implicitly promote with native floating dtype: {ds}")
+    return dtypes.df32 if dtypes.df32 in ds else dtypes.df16
   return min(set.intersection(*[_get_recursive_parents(d) for d in ds]))
 def least_upper_float(dt:DType) -> DType: return dt if dtypes.is_float(dt) else least_upper_dtype(dt, dtypes.default_float)
 
@@ -210,6 +221,8 @@ def can_lossless_cast(dt0:DType, dt1:DType) -> bool:
 def sum_acc_dtype(dt:DType):
   # default acc dtype for sum
   if dt in dtypes.weaks: return dt
+  if dt == dtypes.df16: return dtypes.df32
+  if dt == dtypes.df32: return dtypes.df32
   if dtypes.is_unsigned(dt): return least_upper_dtype(dt, dtypes.uint)
   if dtypes.is_int(dt) or dt == dtypes.bool: return least_upper_dtype(dt, dtypes.int)
   return least_upper_dtype(dt, to_dtype(getenv("SUM_DTYPE", "float32")))
@@ -274,18 +287,42 @@ def fp8_to_float(x: int, dtype: DType) -> float:
 
 def storage_fmt_for_dtype(dtype:DType): return 'H' if dtype == dtypes.bfloat16 else 'B' if dtype in dtypes.fp8s else dtype.fmt
 
+def _to_dfloat_storage(x, frac_bits:int, storage_bits:int) -> int:
+  """Convert a Python int/binary64 directly to signed fixed-point storage, ties away from zero."""
+  limit_pos, limit_neg = (1 << (storage_bits-1))-1, 1 << (storage_bits-1)
+  if isinstance(x, int):
+    raw = x << frac_bits
+    return max(-limit_neg, min(limit_pos, raw))
+  f = float(x)
+  bits, = struct.unpack('Q', struct.pack('d', f))
+  sign, exp, frac = bits>>63, (bits>>52)&0x7ff, bits&0xfffffffffffff
+  if exp == 0x7ff: return 0 if frac else (-limit_neg if sign else limit_pos)
+  if exp == 0 and frac == 0: return 0
+  mant, e = ((1<<52)|frac, exp-1023) if exp else (frac, -1022)
+  shift = e - 52 + frac_bits
+  if shift >= 0: mag = mant << shift
+  else:
+    r = -shift
+    mag = 0 if r > 53 else (mant + (1 << (r-1))) >> r
+  return max(-limit_neg, -mag) if sign else min(limit_pos, mag)
+
 def to_storage_scalar(x, dtype:DType):
+  if dtype == dtypes.df16: return _to_dfloat_storage(x, 16, 32)
+  if dtype == dtypes.df32: return _to_dfloat_storage(x, 32, 64)
   if dtype == dtypes.half: return float_to_fp16(x)
   if dtype == dtypes.bfloat16: return (struct.unpack('I', struct.pack('f', float_to_bf16(x)))[0] >> 16) & 0xFFFF
   if dtype in dtypes.fp8s: return float_to_fp8(float(x), dtype)
   return x
 
 def from_storage_scalar(x, dtype:DType):
+  if dtype == dtypes.df16: return float(x) / 65536.0
+  if dtype == dtypes.df32: return float(x) / 4294967296.0
   if dtype == dtypes.bfloat16: return struct.unpack('f', struct.pack('I', (x & 0xFFFF) << 16))[0]
   if dtype in dtypes.fp8s: return fp8_to_float(int(x), dtype)
   return x
 
-truncate: dict[DType, Callable] = {dtypes.bool: bool,
+truncate: dict[DType, Callable] = {dtypes.bool: bool, dtypes.df16: lambda x: from_storage_scalar(to_storage_scalar(x, dtypes.df16), dtypes.df16),
+  dtypes.df32: lambda x: from_storage_scalar(to_storage_scalar(x, dtypes.df32), dtypes.df32),
   dtypes.float16: float_to_fp16, dtypes.bfloat16: lambda x: float_to_bf16(float(x)),
   **{fp8: (lambda x, dtype=fp8: fp8_to_float(float_to_fp8(x, dtype), dtype)) for fp8 in dtypes.fp8s},
   **{getattr(dtypes, n): (lambda x, c=getattr(ctypes, f'c_{n}'): c(x).value)
@@ -295,7 +332,7 @@ truncate: dict[DType, Callable] = {dtypes.bool: bool,
 
 def _to_np_dtype(dtype:DType) -> type|None:
   import numpy as np
-  if dtype in { dtypes.bfloat16, *dtypes.fp8s }: return np.float32
+  if dtype in { dtypes.bfloat16, *dtypes.fp8s, *dtypes.dfloats }: return np.float32 if dtype != dtypes.df32 else np.float64
   return np.dtype(dtype.fmt).type if dtype.fmt is not None else None
 def _from_np_dtype(npdtype:'np.dtype') -> DType: # type: ignore [name-defined] # noqa: F821
   import numpy as np

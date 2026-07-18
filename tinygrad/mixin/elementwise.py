@@ -243,6 +243,11 @@ class ElementwiseMixin(CreationMixin):
     ```
     """
     a, b = self._broadcasted(x, reverse)
+    # DF division is a primitive with one defined rounding point. Lowering it to
+    # multiply-by-reciprocal would introduce an extra DF rounding operation.
+    if dtypes.is_dfloat(a.dtype):
+      if rounding_mode is not None: raise RuntimeError(f"{rounding_mode=} is unsupported for deterministic fixed-point")
+      return a.alu(Ops.FDIV, b)
     if dtypes.is_int(a.dtype):
       if rounding_mode == "trunc": return a.alu(Ops.CDIV, b)
       if rounding_mode == "floor": return a.alu(Ops.FLOORDIV, b)

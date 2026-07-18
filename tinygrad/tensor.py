@@ -283,6 +283,7 @@ class Tensor(RandMixin):
     """
     if self.dtype in dtypes.weaks: return self.cast(strong_dtype(self.dtype)).tolist()
     # TODO: remove half once minimum python supports it
+    if self.dtype in dtypes.dfloats: return self.numpy().tolist()
     if self.dtype in (dtypes.half, dtypes.bfloat16, *dtypes.fp8s): return self.cast(dtypes.float32).tolist()
     if 0 in self.shape:
       assert all_int(self.shape), f"no data if shape is symbolic, {self.shape=}"
@@ -302,6 +303,8 @@ class Tensor(RandMixin):
     if self.dtype in dtypes.weaks: return self.cast(strong_dtype(self.dtype)).numpy()
     assert all_int(self.shape), f"no data if shape is symbolic, {self.shape=}"
     import numpy as np
+    if self.dtype == dtypes.df16: return self.bitcast(dtypes.int32).numpy().astype(np.float32) / np.float32(65536.0)
+    if self.dtype == dtypes.df32: return self.bitcast(dtypes.int64).numpy().astype(np.float64) / np.float64(4294967296.0)
     if self.dtype in { dtypes.bfloat16, *dtypes.fp8s }: return self.float().numpy()
     if 0 in self.shape: return np.empty(self.shape, dtype=_to_np_dtype(self.dtype))
     return self._buffer().numpy().reshape(self.shape)
