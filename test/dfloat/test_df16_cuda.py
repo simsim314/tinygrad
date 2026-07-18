@@ -81,4 +81,13 @@ class TestDFloatCUDA(unittest.TestCase):
       self.assertEqual(bits16(x.sigmoid()),sig_expected)
       self.assertEqual(bits16(x.silu()),silu_expected)
 
+  def test_log2_family(self):
+    x16=raw16([16384,32768,65536,98304,131072,196608,524288])
+    x32=raw32([1073741824,2147483648,4294967296,6442450944,8589934592,12884901888,34359738368])
+    expected16=[-131072,-65536,0,38335,65536,103871,196608]
+    expected32=[-8589934592,-4294967296,0,2512371419,4294967296,6807338715,12884901888]
+    for _ in range(20):
+      self.assertEqual(bits16(x16.log2()),expected16)
+      self.assertEqual(bits32(x32.log2()),expected32)
+
 if __name__ == "__main__": unittest.main()
