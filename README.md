@@ -1,11 +1,11 @@
 # Deterministic DF16/DF32 inference and attestation
 
 ## Main idea
+Indeterminism in LLMs—especially local, open-weight models—limits the range of applications in which their outputs can be trusted. A deterministic LLM combined with a fixed policy prompt could formally attest that a submitted input satisfies a defined policy.
 
-Ordinary floating-point inference can change slightly across GPUs, compilers,
-kernel schedules, and reduction orders. This project adds deterministic fixed-
-point arithmetic to tinygrad so the same model, prompt, and execution schema
-produce exactly the same integer values on every conforming backend.
+Such an attestation would reduce noise from invalid or low-value submissions while preserving meaningful input. By attaching proof that “this policy model approved this input,” users and policy makers could communicate through a shared, reproducible validation process.
+
+Ordinary floating-point inference, however, may vary slightly across GPUs, compilers, kernel schedules, and reduction orders, making exact reproducibility difficult. This project adds deterministic fixed-point arithmetic to tinygrad so that the same model, prompt, and execution schema produce exactly the same integer values on every conforming backend.
 
 DF16 stores signed Q15.16 values in 32 bits. DF32 stores signed Q31.32 values in
 64 bits. Arithmetic, rounding, saturation, transcendental approximations, and
