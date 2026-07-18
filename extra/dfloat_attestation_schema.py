@@ -6,10 +6,6 @@ from typing import Mapping, Sequence
 
 from extra.dfloat_attestation import canonical_json_bytes, sha256_frame
 
-REDUCTION_CHUNK_MAX = 256
-REDUCTION_CHUNKS_V1_MAX = 64
-
-
 def next_power_of_two(value:int) -> int:
   if value <= 0: raise ValueError(f"reduction length must be positive, got {value}")
   return 1 << (value-1).bit_length()
@@ -18,26 +14,23 @@ def next_power_of_two(value:int) -> int:
 @dataclass(frozen=True)
 class ReductionPlan:
   length: int
-  chunk_width: int
-  chunk_count: int
-  padded_chunk_count: int
+  padded_length: int
+  tree_depth: int
+  witness_level: int
   frontiers: tuple[str, ...]
 
   def json(self) -> dict[str, object]:
-    return {"length":self.length, "chunk_width":self.chunk_width, "chunk_count":self.chunk_count,
-            "padded_chunk_count":self.padded_chunk_count, "frontiers":list(self.frontiers)}
+    return {"length":self.length, "padded_length":self.padded_length, "tree_depth":self.tree_depth,
+            "witness_level":self.witness_level, "frontiers":list(self.frontiers)}
 
 
 def reduction_plan(length:int) -> ReductionPlan:
-  width = min(REDUCTION_CHUNK_MAX, next_power_of_two(length))
-  count = (length + width - 1) // width
-  if count > REDUCTION_CHUNKS_V1_MAX:
-    raise ValueError(f"v1 attestation supports at most {REDUCTION_CHUNKS_V1_MAX} reduction chunks, got {count} for K={length}")
-  padded = next_power_of_two(count)
-  # frontier_0 contains one canonical local-tree result per chunk.  Every later
-  # frontier halves the padded coarse tree through its single final value.
-  levels = 1 + (padded.bit_length()-1)
-  return ReductionPlan(length, width, count, padded, tuple(f"frontier_{i}" for i in range(levels)))
+  if length <= 0: raise ValueError(f"reduction length must be positive, got {length}")
+  # Select the lower median level of the complete logical tree.  Both the
+  # arithmetic DAG and witness location are functions of input length alone.
+  tree_depth=(length-1).bit_length()
+  witness_level=tree_depth//2
+  return ReductionPlan(length,next_power_of_two(length),tree_depth,witness_level,(f"level_{witness_level}",))
 
 
 @dataclass(frozen=True)
@@ -67,19 +60,19 @@ def embedding_plan(name:str="embedding") -> ModulePlan:
 
 def rmsnorm_plan(name:str, width:int) -> ModulePlan:
   red = reduction_plan(width)
-  witnesses = ("input_df16","squares_df32",*(f"square_{x}_df32" for x in red.frontiers),
+  witnesses = ("input_df16","squares_df32","square_reduction_frontiers_df32","square_sum_df32",
                "mean_plus_epsilon_df32","reciprocal_root_df32","normalized_pre_weight_df16","norm_output_df16")
-  return ModulePlan(name,"rmsnorm",witnesses,(('width',width),('chunk_width',red.chunk_width)))
+  return ModulePlan(name,"rmsnorm",witnesses,(('width',width),('padded_width',red.padded_length),
+    ('tree_depth',red.tree_depth),('witness_level',red.witness_level)))
 
 
 def matmul_plan(name:str, k:int, *, bias:bool=False, right_role:str="weight") -> ModulePlan:
   red = reduction_plan(k)
-  witnesses = ["activation_input",f"{right_role}_df16"]
-  if red.chunk_count == 1: witnesses.append("products_df32")
-  witnesses.extend(f"{x}_df32" for x in red.frontiers)
+  witnesses = ["activation_input",f"{right_role}_df16","reduction_frontiers_df32","accumulator_df32"]
   if bias: witnesses.append("bias_result_df32")
   witnesses.append("output_df16")
-  return ModulePlan(name,"matmul",tuple(witnesses),(('k',k),('chunk_width',red.chunk_width),('bias',bias),('right_role',right_role)))
+  return ModulePlan(name,"matmul",tuple(witnesses),(('k',k),('padded_k',red.padded_length),
+    ('tree_depth',red.tree_depth),('witness_level',red.witness_level),('bias',bias),('right_role',right_role)))
 
 
 def rope_plan(name:str="rope") -> ModulePlan:
@@ -94,18 +87,18 @@ def kv_update_plan(name:str="kv_update") -> ModulePlan:
 
 def attention_scores_plan(name:str, head_dim:int) -> ModulePlan:
   red = reduction_plan(head_dim)
-  witnesses = ["q_input","repeated_k_input"]
-  if red.chunk_count == 1: witnesses.append("qk_products_df32")
-  witnesses.extend(f"qk_{x}_df32" for x in red.frontiers)
-  witnesses.extend(("qk_df32","head_dim_root_df32","scaled_qk_df32","mask_and_masked_qk_df32","softmax_input_df16"))
-  return ModulePlan(name,"attention_scores",tuple(witnesses),(('head_dim',head_dim),('chunk_width',red.chunk_width)))
+  witnesses = ("q_input","repeated_k_input","qk_reduction_frontiers_df32","qk_df32","head_dim_root_df32","scaled_qk_df32",
+               "mask_and_masked_qk_df32","softmax_input_df16")
+  return ModulePlan(name,"attention_scores",witnesses,(('head_dim',head_dim),('padded_head_dim',red.padded_length),
+    ('tree_depth',red.tree_depth),('witness_level',red.witness_level)))
 
 
 def softmax_plan(name:str, width:int) -> ModulePlan:
   red = reduction_plan(width)
-  witnesses = ["scores_df16",*(f"row_max_{x}_df16" for x in red.frontiers),"shifted_df16","shifted_df32","exp_df32",
-               *(f"exp_sum_{x}_df32" for x in red.frontiers),"reciprocal_sum_df32","probabilities_df16"]
-  return ModulePlan(name,"softmax",tuple(witnesses),(('width',width),('chunk_width',red.chunk_width)))
+  witnesses = ("scores_df16","row_max_frontiers_df16","row_max_df16","shifted_df16","shifted_df32","exp_df32",
+               "exp_sum_frontiers_df32","exp_sum_df32","reciprocal_sum_df32","probabilities_df16")
+  return ModulePlan(name,"softmax",witnesses,(('width',width),('padded_width',red.padded_length),
+    ('tree_depth',red.tree_depth),('witness_level',red.witness_level)))
 
 
 def residual_plan(name:str) -> ModulePlan:
@@ -121,13 +114,15 @@ def silu_plan(name:str) -> ModulePlan:
                                   "sigmoid_df16","wide_silu_product","silu_output_df16"))
 
 
-def token_selection_plan(name:str="token_selection", sampling:bool=False) -> ModulePlan:
+def token_selection_plan(width:int, name:str="token_selection", sampling:bool=False) -> ModulePlan:
+  red=reduction_plan(width)
   if sampling:
     witnesses=("logits","temperature_scaled_logits","candidate_reduction","top_p_filter","rng_before",
                "selected_candidate","selected_token","rng_after","emitted_token_bytes","text_stop_state")
   else:
     witnesses=("logits","max_frontiers","maximum_and_tie_state","selected_token","text_stop_state")
-  return ModulePlan(name,"token_selection",witnesses,(('sampling',sampling),))
+  return ModulePlan(name,"token_selection",witnesses,(('sampling',sampling),('width',width),
+    ('padded_width',red.padded_length),('tree_depth',red.tree_depth),('witness_level',red.witness_level)))
 
 
 @dataclass(frozen=True)

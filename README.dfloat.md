@@ -43,8 +43,8 @@ repository or a home-directory download cache.
 
 ## Run the CUDA model
 
-Use Python 3.11 or newer and place `tokenizer.model` beside the GGUF file. Set
-`DEV=CUDA`; the old `CUDA=1` selector is not supported by this tinygrad version.
+Place `tokenizer.model` beside the GGUF file. Set `DEV=CUDA`; the old `CUDA=1`
+selector is not supported by this tinygrad version.
 
 ```sh
 DEV=CUDA python examples/llama3.py \
@@ -96,35 +96,29 @@ The most important current checks are:
 
 ## Getting an attestation
 
-Attestation is currently exposed as a Python API. Create one
-`AttestationSession`, use it for every ordered token step, record greedy token
-selection, then serialize the final document:
+Generate 64 greedy tokens and checkpoint the attestation after every token:
 
-```python
-import json
-from extra.dfloat_attestation import AttestationSession
-from extra.dfloat_attested_llama import attest_dense_llama_forward, attest_greedy_selection
-
-session = AttestationSession()
-logits, recorder = attest_dense_llama_forward(
-  model, token_tensor, step=position, start_pos=position, session=session)
-selected_token = attest_greedy_selection(logits, recorder)
-
-artifact = session.artifact({
-  "model": "Llama-3.2-1B-Instruct-Q6_K",
-  "prompt_tokens": prompt_tokens,
-  "sampling": "greedy",
-}, generated_text)
-
-with open("attestation.json", "w", encoding="utf-8") as f:
-  json.dump(artifact, f, sort_keys=True, separators=(",", ":"))
-
-with open("attestation.txt", "w", encoding="utf-8") as f:
-  f.write(session.text_artifact(artifact))
+```sh
+DEV=CUDA python examples/dfloat_attest_llama.py \
+  --model /mnt/pacer/ai-models/tinygrad/llama3-1b-instruct/Llama-3.2-1B-Instruct-Q6_K.gguf \
+  --tokenizer /mnt/pacer/ai-models/tinygrad/llama3-1b-instruct/tokenizer.model \
+  --prompt "tell me a story about paris" \
+  --max-tokens 64 \
+  --output-dir /mnt/pacer/ai-models/tinygrad/attestations/paris-64
 ```
 
-For multiple generated tokens, repeat the forward and selection calls with
-strictly increasing `step`/`position` before calling `session.artifact`.
+The output directory contains `attestation.json`, a compact `attestation.txt`,
+`story.txt`, and the exact invocation in `command.txt`. Verify the JSON without
+loading the model:
+
+```sh
+python examples/dfloat_verify_attestation.py \
+  /mnt/pacer/ai-models/tinygrad/attestations/paris-64/attestation.json
+```
+
+Re-execution on another machine is the stronger check: run the same command
+with identical model/tokenizer bytes, then compare `run_root` and
+`document_sha256`.
 
 Useful JSON fields are:
 
@@ -145,8 +139,6 @@ The full framing and witness specification is in
 - Run the complete 1B attested graph on both CPU and CUDA and compare complete
   artifacts. Small-model equality is already validated; a full independent-
   machine proof is not yet complete.
-- Add a CLI exporter/verifier for `attestation.json`; the current interface is
-  Python-only.
 - Move tensor SHA-256/Merkle hashing to an optional accelerator sidecar. The
   current correctness-first recorder copies canonical tensor bytes to CPU and
   uses standard `hashlib` SHA-256.

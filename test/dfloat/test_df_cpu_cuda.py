@@ -4,11 +4,12 @@ from tinygrad import Context, Tensor, dtypes
 from tinygrad.nn.state import get_state_dict, load_state_dict
 from extra.dfloat import convert_state_dict_df16, precompute_freqs_cis_df16
 from extra.dfloat_attestation import AttestationRecorder, AttestationSession
-from extra.dfloat_attestation_schema import residual_plan
-from extra.dfloat_attestation_ops import attested_matmul, attested_rmsnorm, attested_softmax
+from extra.dfloat_attestation_schema import reduction_plan, residual_plan
+from extra.dfloat_attestation_ops import attested_matmul, attested_rmsnorm, attested_softmax, reduction_frontiers
 from extra.dfloat_attestation_schema import matmul_plan, rmsnorm_plan, softmax_plan
 from extra.dfloat_attested_llama import attest_dense_llama_forward, attest_greedy_selection
 from extra.models.llama import Transformer
+from tinygrad.uop import Ops
 
 
 def df16_raw(values, device):
@@ -42,9 +43,18 @@ class TestDFCPUCUDA(unittest.TestCase):
 
   def test_fixed_reduction_tree(self):
     values=[2147483647,2147483647,-2147483648,-2147483648,65536,-65536,98304,-147456,1,-1]
-    cpu,gpu=df16_raw(values,"CPU"),df16_raw(values,"CUDA")
-    self.assert_same(cpu.sum(),gpu.sum(),dtypes.int32)
-    self.assert_same(cpu.max(),gpu.max(),dtypes.int32)
+    plan=reduction_plan(len(values))
+    reference=values+[0]*(plan.padded_length-len(values))
+    levels=[reference]
+    while len(reference) > 1:
+      reference=[max(-(1<<31),min((1<<31)-1,reference[i]+reference[i+1])) for i in range(0,len(reference),2)]
+      levels.append(reference)
+    results=[]
+    for device in ("CPU","CUDA"):
+      total,(midpoint,)=reduction_frontiers(df16_raw(values,device),Ops.ADD)
+      results.append((total.bitcast(dtypes.int32).numpy().tolist(),midpoint.bitcast(dtypes.int32).numpy().tolist()))
+    self.assertEqual(results[0],results[1])
+    self.assertEqual(results[0],(reference[0],levels[plan.witness_level]))
 
   def test_df16_transcendentals(self):
     values=[-655360,-589824,-98305,-98304,-65537,-65536,-1,0,1,65535,65536,98304,589824,655360]

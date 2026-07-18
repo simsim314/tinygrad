@@ -67,11 +67,10 @@ autotuned at runtime.  Each witness is encoded and committed like any other
 semantic tensor, with its operation name, position, dtype, shape, and dependency
 roots.  Version 1 requires:
 
-- matrix multiplication and linear layers: complete deterministic chunk-sum and
-  merge-frontier states selected from the specified adjacent-pair reduction DAG;
-  witnesses must follow the actual DAG and are not arbitrary prefix percentages;
-- general reductions: every coarse frontier selected by the formula in section
-  2.3, including the final level;
+- matrix multiplication and linear layers: the complete deterministic midpoint
+  state selected from the specified adjacent-pair reduction DAG; witnesses must
+  follow the actual DAG and are not arbitrary prefix percentages;
+- general reductions: the derived midpoint and final level from section 2.3;
 - RMSNorm: squared-value tensor, reduction result, deterministic reciprocal-root
   result, scale product, and normalized output;
 - softmax: maximum, shifted values, deterministic exponent values, sum, and
@@ -109,33 +108,29 @@ There is no random, value-dependent, timing-dependent, or hardware-dependent
 witness selection.  Given `execution_spec_root`, tensor shapes, and token
 position, the complete ordered witness list is known before execution.
 
-For every reduction over logical axis K in the 1B Llama v1 schema:
+For every reduction over a positive logical axis K:
 
 1. enumerate K in increasing logical index order;
-2. define `W = min(256, next_power_of_two(K))` and partition K into consecutive
-   W-element chunks `[W*c, W*(c+1))`;
-3. pad the final chunk to W with the operation identity: zero for add, one for
-   multiply, and the dtype minimum for max;
-4. reduce each chunk with the canonical adjacent-pair tree and commit the full
-   ordered tensor of chunk roots as `frontier_0`;
-5. pad the number of chunk roots to the next power of two with the same identity;
-6. merge adjacent pairs and commit every complete resulting frontier in order,
-   `frontier_1`, `frontier_2`, and so on, through the single final result;
-7. order non-reduction dimensions lexicographically in contiguous row-major
+2. let `D = ceil(log2(K))` and pad K to `2^D` with the operation identity:
+   zero for add, one for multiply, and the dtype minimum for max;
+3. at every level, combine adjacent pairs `(0,1), (2,3), ...`; an implementation
+   may fuse independent lower subtrees only if it preserves this exact operation
+   DAG rather than substituting a grouped reduction;
+4. retain the complete level `floor(D/2)` as the internal reduction witness;
+5. make the midpoint a full execution barrier, then materialize each dependent
+   upper level before starting the next, through level D, whose single value is
+   the separately witnessed final accumulator;
+6. order non-reduction dimensions lexicographically in contiguous row-major
    logical coordinate order before Merkle chunking.
 
-For matmul reductions, when K fits in one chunk, also commit `products_df32`:
-the complete ordered tensor of deterministic products before the local tree.
-This is a fixed rule, not sampling, and supplies a meaningful internal multiply
-witness for short QK or probability-by-V reductions.  It is omitted when there
-are multiple chunks, where `frontier_0` already supplies all per-chunk internal
-results without the much larger product tensor.
+For matmul reductions, the retained midpoint commits every balanced subtree at
+that level across every output coordinate. It is a deterministic intermediate
+between individual products and final accumulators and is never selected from a
+model dimension, runtime value, hardware schedule, or safety threshold. The
+operation specification commits K, the padded length, D, and the witness level.
 
-Thus the witness points are properties of the mathematical dependency DAG, not
-CUDA thread blocks or completion order.  The v1 1B schema admits at most 64
-coarse chunks for every covered reduction, keeping the reduction portion to at
-most seven roots (`frontier_0` through `frontier_6`).  A larger future model must
-publish a new schema rule rather than silently omit levels to meet a count.
+Thus witness coverage is a property of the mathematical dependency DAG, not
+CUDA thread blocks, completion order, a model dimension, or an input-size cap.
 
 For non-reduction modules, the witness list is exactly the numbered semantic
 state list in section 5.  Conditional states are controlled only by committed
@@ -268,22 +263,23 @@ attestation cost.
 Repeated token IDs remain repeated in the selected-row tensor.  This commits the
 lookup behavior and not merely the set of rows.
 
-### 5.3 RMSNorm: 7–10 entries for the v1 model
+### 5.3 RMSNorm: 8 entries
 
 1. `input_df16`: input root referenced from the producer.
 2. `squares_df32`: elementwise deterministic widening and squares.
-3–6. `square_frontier_0...n`: each complete coarse frontier selected by the
-   deterministic rule in section 2.3 is a separate chained entry.
-7. `mean_plus_epsilon`: final sum, deterministic division by width, and pinned
+3. `square_reduction_frontiers_df32`: the complete derived square-sum midpoint
+   according to section 2.3.
+4. `square_sum_df32`: final deterministic sum.
+5. `mean_plus_epsilon`: final sum, deterministic division by width, and pinned
    DF epsilon addition.
-8. `reciprocal_root_df32`: deterministic integer square-root/reciprocal result.
-9. `normalized_pre_weight_df16`: normalization product and narrowing.
-10. `norm_output_df16`: deterministic product with the norm weight.
+6. `reciprocal_root_df32`: deterministic integer square-root/reciprocal result.
+7. `normalized_pre_weight_df16`: normalization product and narrowing.
+8. `norm_output_df16`: deterministic product with the norm weight.
 
-The schema records the reduction chunk width and exact frontier topology.  It
-never substitutes a hardware-selected grouped reduction.  The numbered range
-contracts when fewer frontiers exist; subsequent entries retain their semantic
-names and receive consecutive encoded indices.
+The schema records the reduction length, padded length, tree depth, and derived
+witness level. It never substitutes a hardware-selected grouped reduction. The
+midpoint witness changes length, but its name and index do not change with
+reduction depth.
 
 ### 5.4 Linear projection and matmul: 5–10 entries
 
@@ -294,20 +290,18 @@ reduction evidence is shared.
 1. `activation_input`: canonical activation root.
 2. `weight_df16`: deterministically converted weight root, cached and referenced
    on later tokens; attention-value matmul references the V-state root instead.
-3. `products_df32`: emitted exactly when K fits one chunk, as required by
-   section 2.3.
-4. `frontier_0_df32`: one value per output coordinate and fixed K chunk; every
-   chunk is reduced with the canonical adjacent-pair tree.
-5–8. `frontier_1_df32...frontier_n_df32`: every merge frontier in level order;
-   the last is the final deterministic accumulator per output.
-9. `bias_result`: emitted only when the configured projection has a bias.
-10. `output_df16`: deterministic narrowing/saturation and final layout.
+3. `reduction_frontiers_df32`: the complete derived midpoint level in canonical
+   logical order.
+4. `accumulator_df32`: final deterministic accumulator per output.
+5. `bias_result`: emitted only when the configured projection has a bias.
+6. `output_df16`: deterministic narrowing/saturation and final layout.
 
-The exact count follows deterministically from `ceil(K/256)` and the committed
-bias configuration, giving five to ten entries for the v1 model shapes.  All
-chunk sums and all nodes in every coarse frontier are covered—there is no random
-or hand-picked sampling.  Implementations may stream frontier tiles into the
-hasher instead of storing the complete frontier.
+The exact count follows only from the semantic presence of bias, giving five or
+six entries for every input size.
+Every final result is produced by the fully specified pair loop, and the complete
+derived midpoint is committed—there is no random or hand-picked sampling.
+Implementations may stream midpoint tiles into the hasher instead of storing the
+complete frontier.
 
 ### 5.5 RoPE for Q and K: 10 entries
 
@@ -336,39 +330,36 @@ hashes only the position slice it actually consumes.
 The initial all-zero cache root and maximum-context shape are committed by the
 execution specification.  A later attention module references `new_kv_state`.
 
-### 5.7 Attention score, scaling, and mask: 8–10 entries
+### 5.7 Attention score, scaling, and mask: 8 entries
 
 1. `q_input` and 2. `repeated_k_input`: Q and GQA-expanded K roots.
-3. `qk_products`: emitted exactly when K fits one chunk.
-4. `qk_frontier_0`: canonical QK reduction chunk sums.
-5. `qk_frontier_1...n`: every merge frontier in deterministic level order.
-6. `qk_df32`: final score accumulators.
-7. `head_dim_root_df32`: deterministic square root of pinned head dimension.
-8. `scaled_qk_df32`: deterministic division result.
-9. `mask_and_masked_qk_df32`: exact mask/position interpretation and score after
+3. `qk_reduction_frontiers_df32`: the complete derived QK midpoint in
+   deterministic logical order.
+4. `qk_df32`: final score accumulators.
+5. `head_dim_root_df32`: deterministic square root of pinned head dimension.
+6. `scaled_qk_df32`: deterministic division result.
+7. `mask_and_masked_qk_df32`: exact mask/position interpretation and score after
    deterministic mask addition.
-10. `softmax_input_df16`: deterministic narrowing consumed by softmax.
+8. `softmax_input_df16`: deterministic narrowing consumed by softmax.
 
-Numbered ranges expand or contract according to K, and later semantic entries
-are renumbered consecutively.  Every coarse frontier is emitted; none is dropped
-to satisfy a target count.  The v1 model shape remains within ten entries.
+The derived midpoint remains covered for arbitrary K without changing the
+witness count.
 
-### 5.8 Softmax: 8–10 entries for the v1 context
+### 5.8 Softmax: 10 entries
 
 1. `scores_df16`: exact input score root.
-2–3. `row_max_frontier_0...n_df16`: every coarse frontier of the fixed max DAG,
-   each as a separate chained entry.
+2. `row_max_frontiers_df16`: the complete derived max midpoint.
+3. `row_max_df16`: final detached row maximum.
 4. `shifted_df16`: scores minus detached row maximum.
 5. `shifted_df32`: exact widening before exponentiation.
 6. `exp_df32`: deterministic integer `exp2(x/log(2))` output.
-7–8. `exp_sum_frontier_0...n_df32`: every coarse frontier and final row sums,
-   each as a separate chained entry.
+7. `exp_sum_frontiers_df32`: the complete derived sum midpoint.
+8. `exp_sum_df32`: final row sum.
 9. `reciprocal_sum_df32`: deterministic reciprocal result.
 10. `probabilities_df16`: product, narrowing, and final probabilities.
 
-The ranges contract for shorter contexts and all later semantic entries are
-renumbered consecutively.  For a fixed token position and context shape, their
-number and order are fully determined before execution.
+The packed tensor lengths follow the context shape, while witness names and
+indices remain fixed and are determined before execution.
 
 The deterministic exp implementation may additionally expose a versioned
 internal polynomial/table witness in a future schema.  V1 commits its complete

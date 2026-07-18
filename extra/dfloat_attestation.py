@@ -287,6 +287,7 @@ class ModuleRecord:
   boundary: int
   name: str
   kind: str
+  operation_spec_root: bytes
   witnesses: tuple[WitnessRecord, ...]
   input_roots: tuple[bytes, ...]
   output_roots: tuple[bytes, ...]
@@ -295,6 +296,7 @@ class ModuleRecord:
 
   def json(self) -> dict[str, object]:
     return {"step":self.step,"boundary":self.boundary,"name":self.name,"kind":self.kind,
+            "operation_spec_root":self.operation_spec_root.hex(),
             "input_roots":[x.hex() for x in self.input_roots],"output_roots":[x.hex() for x in self.output_roots],
             "witnesses":[x.json() for x in self.witnesses],"module_root":self.module_root.hex(),
             "boundary_root":self.boundary_root.hex()}
@@ -350,7 +352,7 @@ class AttestationRecorder:
     module_digest=chain.finish(outputs)
     bindex=len(self.modules)
     bdigest=boundary_root(index=bindex,name=plan.name,input_roots=inputs,witness_roots=tuple(roots.values()),output_root=module_digest)
-    record=ModuleRecord(self.step,bindex,plan.name,plan.kind,tuple(chain.witnesses),inputs,outputs,module_digest,bdigest)
+    record=ModuleRecord(self.step,bindex,plan.name,plan.kind,plan.spec_root,tuple(chain.witnesses),inputs,outputs,module_digest,bdigest)
     self.modules.append(record)
     return record
 
@@ -412,3 +414,91 @@ class AttestationSession:
       lines.append(f"token_step {step['step']} combined {step['token_combined_root']} "
                    f"ordered {step['ordered_boundary_root']} xor {step['boundary_xor']}")
     return "\n".join(lines)+"\n"
+
+
+def _digest_from_json(value:object, name:str) -> bytes:
+  if not isinstance(value,str): raise ValueError(f"{name} must be a hexadecimal SHA-256 string")
+  try: raw=bytes.fromhex(value)
+  except ValueError as error: raise ValueError(f"{name} is not hexadecimal") from error
+  return require_digest(raw,name)
+
+
+def verify_artifact(document:Mapping[str,object]) -> bool:
+  """Verify every JSON-level chain and aggregate in a self-contained artifact.
+
+  Tensor roots commit raw values which are intentionally not embedded in JSON.
+  Re-execution verification compares those roots or the final document hash.
+  """
+  claimed_document=_digest_from_json(document.get("document_sha256"),"document_sha256")
+  unsigned=dict(document)
+  del unsigned["document_sha256"]
+  if document_root(unsigned) != claimed_document: raise ValueError("document_sha256 mismatch")
+  steps=document.get("steps")
+  if not isinstance(steps,list) or not steps: raise ValueError("artifact must contain at least one token step")
+  previous=ZERO_SHA256
+  step_roots:list[bytes]=[]
+  common_weights:dict[str,str]|None=None
+  for step_index,step in enumerate(steps):
+    if not isinstance(step,dict): raise ValueError(f"steps[{step_index}] must be an object")
+    step_number=step.get("step")
+    if not isinstance(step_number,int): raise ValueError(f"steps[{step_index}].step must be an integer")
+    modules=step.get("modules")
+    if not isinstance(modules,list): raise ValueError(f"steps[{step_index}].modules must be a list")
+    boundaries:list[bytes]=[]
+    for module_index,module in enumerate(modules):
+      if not isinstance(module,dict): raise ValueError(f"module {module_index} must be an object")
+      if module.get("step") != step_number or module.get("boundary") != module_index:
+        raise ValueError(f"module order mismatch at step {step_number} boundary {module_index}")
+      name=module.get("name")
+      if not isinstance(name,str): raise ValueError("module name must be text")
+      inputs=tuple(_digest_from_json(x,f"{name}.input_root") for x in module.get("input_roots",()))
+      outputs=tuple(_digest_from_json(x,f"{name}.output_root") for x in module.get("output_roots",()))
+      chain=ModuleChain(step_number,name,_digest_from_json(module.get("operation_spec_root"),f"{name}.operation_spec_root"),inputs)
+      witnesses=module.get("witnesses")
+      if not isinstance(witnesses,list): raise ValueError(f"{name}.witnesses must be a list")
+      witness_roots:list[bytes]=[]
+      for witness_index,witness in enumerate(witnesses):
+        if not isinstance(witness,dict) or witness.get("index") != witness_index or not isinstance(witness.get("name"),str):
+          raise ValueError(f"{name} witness order mismatch at {witness_index}")
+        root=_digest_from_json(witness.get("root"),f"{name}.witness[{witness_index}].root")
+        record=chain.add(witness["name"],root)
+        if record.chain != _digest_from_json(witness.get("chain"),f"{name}.witness[{witness_index}].chain"):
+          raise ValueError(f"{name} witness chain mismatch at {witness_index}")
+        witness_roots.append(root)
+      module_root=chain.finish(outputs)
+      if module_root != _digest_from_json(module.get("module_root"),f"{name}.module_root"):
+        raise ValueError(f"{name} module_root mismatch")
+      bdigest=boundary_root(index=module_index,name=name,input_roots=inputs,witness_roots=witness_roots,output_root=module_root)
+      if bdigest != _digest_from_json(module.get("boundary_root"),f"{name}.boundary_root"):
+        raise ValueError(f"{name} boundary_root mismatch")
+      boundaries.append(bdigest)
+    ordered,diagnostic_xor,combined=token_root(previous=previous,position=step_number,input_token=int(step["input_token"]),
+      selected_token=int(step["selected_token"]),boundary_roots=boundaries)
+    if ordered != _digest_from_json(step.get("ordered_boundary_root"),f"step[{step_number}].ordered_boundary_root"):
+      raise ValueError(f"step {step_number} ordered boundary mismatch")
+    if diagnostic_xor != _digest_from_json(step.get("boundary_xor"),f"step[{step_number}].boundary_xor"):
+      raise ValueError(f"step {step_number} boundary XOR mismatch")
+    if combined != _digest_from_json(step.get("token_combined_root"),f"step[{step_number}].token_combined_root"):
+      raise ValueError(f"step {step_number} token chain mismatch")
+    weights=step.get("weights")
+    if not isinstance(weights,dict) or not all(isinstance(k,str) and isinstance(v,str) for k,v in weights.items()):
+      raise ValueError(f"step {step_number} weights must be a string map")
+    if common_weights is None: common_weights=weights
+    elif weights != common_weights: raise ValueError(f"step {step_number} weight map differs from prior steps")
+    step_roots.append(combined)
+    previous=combined
+  assert common_weights is not None
+  weight_names=sorted(common_weights)
+  weight_manifest=sha256_frame("DFAT-WEIGHT-MANIFEST-V1",(_u32(len(weight_names))+b"".join(
+    sha256_frame("DFAT-NAMED-WEIGHT-V1",(_text(name),_digest_from_json(common_weights[name],f"weight[{name}]"))) for name in weight_names),))
+  if weight_manifest != _digest_from_json(document.get("weight_manifest_root"),"weight_manifest_root"):
+    raise ValueError("weight manifest mismatch")
+  ordered_steps=ordered_root("DFAT-ORDERED-STEPS-V1",step_roots)
+  if ordered_steps != _digest_from_json(document.get("ordered_steps_root"),"ordered_steps_root"):
+    raise ValueError("ordered steps mismatch")
+  metadata=document.get("metadata")
+  generated_text=document.get("generated_text")
+  if not isinstance(metadata,dict) or not isinstance(generated_text,str): raise ValueError("invalid metadata or generated text")
+  run_root=sha256_frame("DFAT-RUN-V1",(canonical_json_bytes(metadata),weight_manifest,ordered_steps,_text(generated_text)))
+  if run_root != _digest_from_json(document.get("run_root"),"run_root"): raise ValueError("run_root mismatch")
+  return True

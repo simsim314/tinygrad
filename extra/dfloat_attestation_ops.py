@@ -23,28 +23,36 @@ def _pad_last(x:Tensor, amount:int, identity) -> Tensor:
 
 
 def reduction_frontiers(x:Tensor, op:Ops, axis:int=-1) -> tuple[Tensor, tuple[Tensor, ...]]:
-  """Execute and expose every v1 coarse frontier of the canonical pair tree."""
+  """Execute the canonical adjacent-pair tree and expose its derived midpoint."""
   if op not in (Ops.ADD,Ops.MUL,Ops.MAX): raise ValueError(f"unsupported witnessed reduction {op}")
   axis=x._resolve_dim(axis)
   if axis != x.ndim-1: x=x.permute(tuple(i for i in range(x.ndim) if i != axis)+(axis,))
   plan=reduction_plan(int(x.shape[-1]))
   identity=_identity(x.dtype,op)
-  padded_length=plan.chunk_width*plan.chunk_count
-  x=_pad_last(x,padded_length-x.shape[-1],identity)
-  chunks=x.reshape(*x.shape[:-1],plan.chunk_count,plan.chunk_width)
-  local={Ops.ADD:chunks.sum,Ops.MUL:chunks.prod,Ops.MAX:chunks.max}[op](-1).contiguous().realize()
-  frontiers=[local]
-  current=local
-  if plan.padded_chunk_count != plan.chunk_count:
-    current=_pad_last(current,plan.padded_chunk_count-plan.chunk_count,identity)
-  width=plan.padded_chunk_count
+  current=_pad_last(x,plan.padded_length-x.shape[-1],identity)
+  midpoint=current.contiguous().realize() if plan.witness_level == 0 else None
+  width=plan.padded_length
+  level=0
   while width > 1:
     pair=current.reshape(*current.shape[:-1],width//2,2)
     left,right=pair[...,0],pair[...,1]
-    current={Ops.ADD:left+right,Ops.MUL:left*right,Ops.MAX:left.maximum(right)}[op].contiguous().realize()
-    frontiers.append(current)
+    current={Ops.ADD:left+right,Ops.MUL:left*right,Ops.MAX:left.maximum(right)}[op]
     width//=2
-  return current[...,0] if current.shape[-1] == 1 else current, tuple(frontiers)
+    level+=1
+    # Independent lower subtrees stay fused but retain the explicit UOp DAG.
+    # The derived midpoint and every dependent upper level are full barriers.
+    if level >= plan.witness_level: current=current.contiguous().realize()
+    if level == plan.witness_level: midpoint=current
+  if midpoint is None: raise AssertionError(f"missing reduction witness level {plan.witness_level}")
+  return current[...,0] if current.shape[-1] == 1 else current, (midpoint,)
+
+
+def pack_frontiers(frontiers:tuple[Tensor,...]) -> Tensor:
+  """Pack the complete selected frontier; the operation spec binds its tree level."""
+  if not frontiers: raise ValueError("a reduction must expose at least one frontier")
+  packed=frontiers[0].flatten()
+  for frontier in frontiers[1:]: packed=packed.cat(frontier.flatten())
+  return packed.contiguous().realize()
 
 
 def attested_matmul(x:Tensor, weight:Tensor, plan:ModulePlan, bias:Tensor|None=None) -> tuple[Tensor, OrderedDict[str,Tensor]]:
@@ -64,9 +72,8 @@ def attested_matmul(x:Tensor, weight:Tensor, plan:ModulePlan, bias:Tensor|None=N
   values["activation_input"]=x
   right_role=dict(plan.parameters).get("right_role","weight")
   values[f"{right_role}_df16"]=weight.cast(dtypes.df16)
-  red=reduction_plan(int(x.shape[-1]))
-  if red.chunk_count == 1: values["products_df32"]=products.contiguous().realize()
-  for name,value in zip(red.frontiers,frontiers): values[f"{name}_df32"]=value
+  values["reduction_frontiers_df32"]=pack_frontiers(frontiers)
+  values["accumulator_df32"]=accumulator.contiguous().realize()
   if bias is not None: values["bias_result_df32"]=post.contiguous().realize()
   values["output_df16"]=output
   if tuple(values) != plan.witnesses: raise AssertionError(f"matmul witness implementation differs from schema: {tuple(values)} != {plan.witnesses}")
@@ -84,7 +91,8 @@ def attested_rmsnorm(x:Tensor, weight:Tensor, epsilon:float, plan:ModulePlan) ->
   normalized=(work*reciprocal_root).cast(dtypes.df16).contiguous().realize()
   output=(normalized*weight.cast(dtypes.df16)).contiguous().realize()
   values=OrderedDict((("input_df16",x),("squares_df32",squares)))
-  for name,value in zip(reduction_plan(int(x.shape[-1])).frontiers,frontiers): values[f"square_{name}_df32"]=value
+  values["square_reduction_frontiers_df32"]=pack_frontiers(frontiers)
+  values["square_sum_df32"]=total
   values["mean_plus_epsilon_df32"]=mean_epsilon
   values["reciprocal_root_df32"]=reciprocal_root
   values["normalized_pre_weight_df16"]=normalized
@@ -103,12 +111,13 @@ def attested_softmax(scores:Tensor, plan:ModulePlan) -> tuple[Tensor, OrderedDic
   reciprocal=total.reciprocal().contiguous().realize()
   output=(exponent*reciprocal.unsqueeze(-1)).cast(dtypes.df16).contiguous().realize()
   values=OrderedDict((("scores_df16",scores),))
-  red=reduction_plan(int(scores.shape[-1]))
-  for name,value in zip(red.frontiers,max_frontiers): values[f"row_max_{name}_df16"]=value
+  values["row_max_frontiers_df16"]=pack_frontiers(max_frontiers)
+  values["row_max_df16"]=maximum.contiguous().realize()
   values["shifted_df16"]=shifted
   values["shifted_df32"]=shifted32
   values["exp_df32"]=exponent
-  for name,value in zip(red.frontiers,sum_frontiers): values[f"exp_sum_{name}_df32"]=value
+  values["exp_sum_frontiers_df32"]=pack_frontiers(sum_frontiers)
+  values["exp_sum_df32"]=total.contiguous().realize()
   values["reciprocal_sum_df32"]=reciprocal
   values["probabilities_df16"]=output
   if tuple(values) != plan.witnesses: raise AssertionError(f"softmax witness implementation differs from schema: {tuple(values)} != {plan.witnesses}")
@@ -152,9 +161,7 @@ def attested_attention_scores(q:Tensor, k:Tensor, mask:Tensor|None, plan:ModuleP
   masked=(scaled+additive).contiguous().realize()
   output=masked.cast(dtypes.df16).contiguous().realize()
   values=OrderedDict((('q_input',q),('repeated_k_input',k)))
-  red=reduction_plan(int(q.shape[-1]))
-  if red.chunk_count == 1: values['qk_products_df32']=products.contiguous().realize()
-  for name,value in zip(red.frontiers,frontiers): values[f'qk_{name}_df32']=value
+  values['qk_reduction_frontiers_df32']=pack_frontiers(frontiers)
   values['qk_df32']=qk.contiguous().realize()
   values['head_dim_root_df32']=head_root
   values['scaled_qk_df32']=scaled

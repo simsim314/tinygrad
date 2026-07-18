@@ -2,7 +2,7 @@ import hashlib, struct, unittest
 
 from extra.dfloat_attestation import (AttestationRecorder, ModuleChain, TensorDType, TensorRole, boundary_root, canonical_json_bytes,
   canonical_tensor_header, document_root, ordered_root, sha256_frame, tensor_commitment, tensor_merkle_root, token_root,
-  weight_commitment, xor_roots, ZERO_SHA256)
+  verify_artifact, weight_commitment, xor_roots, ZERO_SHA256)
 from extra.dfloat_attestation_schema import (LlamaV1Config, attention_scores_plan, embedding_plan, llama_block_plan,
   matmul_plan, reduction_plan, rmsnorm_plan, schema_root, softmax_plan, token_selection_plan)
 
@@ -103,28 +103,38 @@ class TestDFAttestationCore(unittest.TestCase):
     self.assertIn("run_sha256",session.text_artifact(artifact))
     changed=session.artifact({"model":"small","temperature_q16":0},"hello!")
     self.assertNotEqual(artifact["run_root"],changed["run_root"])
+    self.assertTrue(verify_artifact(artifact))
+    artifact["steps"][0]["modules"][0]["witnesses"][0]["root"]="00"*32
+    with self.assertRaises(ValueError): verify_artifact(artifact)
 
 
 class TestDFAttestationSchema(unittest.TestCase):
   def test_reduction_frontiers_are_formulaic(self):
-    self.assertEqual(reduction_plan(64).frontiers,("frontier_0",))
-    self.assertEqual(reduction_plan(2048).frontiers,("frontier_0","frontier_1","frontier_2","frontier_3"))
-    self.assertEqual(reduction_plan(8192).frontiers,("frontier_0","frontier_1","frontier_2","frontier_3","frontier_4","frontier_5"))
-    with self.assertRaises(ValueError): reduction_plan(16385)
+    for length in (1,257,16385,128256,1_000_003):
+      plan=reduction_plan(length)
+      self.assertEqual(plan.padded_length,1 << ((length-1).bit_length()))
+      self.assertEqual(plan.tree_depth,(length-1).bit_length())
+      self.assertEqual(plan.witness_level,plan.tree_depth//2)
+      self.assertEqual(plan.frontiers,(f"level_{plan.witness_level}",))
 
   def test_documented_module_counts(self):
     plans=(embedding_plan(),rmsnorm_plan("norm",2048),matmul_plan("small",64),matmul_plan("linear",2048),
            matmul_plan("mlp_down",8192),attention_scores_plan("scores",64),softmax_plan("softmax",512),
-           token_selection_plan(sampling=False),token_selection_plan(sampling=True))
+           token_selection_plan(128256,sampling=False),token_selection_plan(128256,sampling=True))
     self.assertTrue(all(5 <= len(x.witnesses) <= 10 for x in plans))
-    self.assertEqual(len(rmsnorm_plan("norm",2048).witnesses),10)
+    self.assertEqual(len(rmsnorm_plan("norm",2048).witnesses),8)
     self.assertEqual(len(matmul_plan("small",64).witnesses),5)
-    self.assertEqual(len(matmul_plan("mlp_down",8192).witnesses),9)
+    self.assertEqual(len(matmul_plan("mlp_down",8192).witnesses),5)
     self.assertEqual(len(softmax_plan("softmax",512).witnesses),10)
 
-  def test_small_matmul_product_rule_is_not_sampling(self):
-    self.assertIn("products_df32",matmul_plan("short",64).witnesses)
-    self.assertNotIn("products_df32",matmul_plan("wide",2048).witnesses)
+  def test_witness_schema_does_not_grow_with_reduction_depth(self):
+    self.assertEqual(matmul_plan("wide",2048).witnesses,matmul_plan("wide",1_000_003).witnesses)
+    self.assertEqual(rmsnorm_plan("norm",2048).witnesses,rmsnorm_plan("norm",1_000_003).witnesses)
+
+  def test_witness_level_is_derived_from_tree_midpoint(self):
+    for length in (1,2,3,64,2048,8192,128256,1_000_003):
+      plan=reduction_plan(length)
+      self.assertEqual(plan.witness_level,(length-1).bit_length()//2)
 
   def test_llama_block_order_and_root_are_stable(self):
     cfg=LlamaV1Config(dim=2048,hidden_dim=8192,head_dim=64,context_length=512)

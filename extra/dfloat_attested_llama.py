@@ -11,7 +11,7 @@ from extra.dfloat_attestation_schema import (attention_scores_plan, embedding_pl
   residual_plan, rmsnorm_plan, rope_plan, silu_plan, softmax_plan, kv_update_plan)
 from extra.dfloat_attestation_schema import token_selection_plan
 from tinygrad.uop import Ops
-from extra.dfloat_attestation_ops import reduction_frontiers
+from extra.dfloat_attestation_ops import pack_frontiers, reduction_frontiers
 
 
 def _record(recorder:AttestationRecorder, plan, values, inputs, outputs):
@@ -135,15 +135,13 @@ def attest_dense_llama_forward(model, tokens:Tensor, *, step:int=0, start_pos:in
 def attest_greedy_selection(logits:Tensor, recorder:AttestationRecorder, *, emitted_token_bytes:bytes=b"", text_stop_state:bytes=b"") -> int:
   values_1d=logits[:,-1,:].flatten().contiguous().realize()
   maximum,frontiers=reduction_frontiers(values_1d,Ops.MAX,-1)
-  packed_frontiers=frontiers[0].flatten()
-  for frontier in frontiers[1:]: packed_frontiers=packed_frontiers.cat(frontier.flatten())
   selected=values_1d.argmax().cast(dtypes.int32).reshape(1).contiguous().realize()
   token=int(selected.item())
   recorder.set_token_io(selected_token=token)
   tie_state=tensor_raw_bytes(maximum)+token.to_bytes(4,"little",signed=True)
-  plan=token_selection_plan(sampling=False)
+  plan=token_selection_plan(int(values_1d.shape[0]),sampling=False)
   values=OrderedDict((
-    ("logits",values_1d),("max_frontiers",packed_frontiers.contiguous().realize()),
+    ("logits",values_1d),("max_frontiers",pack_frontiers(frontiers)),
     ("maximum_and_tie_state",tie_state),("selected_token",selected),
     ("text_stop_state",emitted_token_bytes+b"\0"+text_stop_state)))
   _record(recorder,plan,values,("logits",),("selected_token","text_stop_state"))
