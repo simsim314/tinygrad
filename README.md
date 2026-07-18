@@ -40,6 +40,10 @@ repository or a home-directory download cache.
 
 
 ## Getting an attestation
+
+For a complete hosted-GPU setup and reproducibility test, run
+[`test_llama3.ipynb`](https://github.com/simsim314/tinygrad/blob/dfloat-deterministic-attestation/test_llama3.ipynb).
+
 Attestation is exposed through the `dfloat_attest_llama.py` command. The following example runs on CUDA, generates 10 tokens for the prompt `Paris`, and writes the resulting attestation artifacts to the specified output directory:
 
 ```sh
