@@ -317,7 +317,8 @@ class RandMixin(OpMixin):
 
     q = self
     acc_dtype = dtypes.df32 if q.dtype in dtypes.dfloats or key.dtype in dtypes.dfloats else least_upper_dtype(q.dtype,key.dtype,dtypes.float32)
-    qk = q.matmul(key.transpose(-2,-1), dtype=acc_dtype) / math.sqrt(q.shape[-1])
+    qk = q.matmul(key.transpose(-2,-1), dtype=acc_dtype)
+    qk = qk / qk.const_like(q.shape[-1]).sqrt() if acc_dtype in dtypes.dfloats else qk / math.sqrt(q.shape[-1])
     # handle attention mask
     if is_causal:
       if attn_mask is not None: raise RuntimeError("cannot set attn_mask when is_causal=True")

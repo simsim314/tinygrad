@@ -435,6 +435,7 @@ class CUDARenderer(CStyleLanguage):
     (UPat(Ops.SQRT, dtype=dtypes.df16, src=(UPat.var("a"),)), lambda ctx,a: f"df16_sqrt({ctx[a]})"),
     (UPat(Ops.EXP2, dtype=dtypes.df16, src=(UPat.var("a"),)), lambda ctx,a: f"df16_exp2({ctx[a]})"),
     (UPat(Ops.LOG2, dtype=dtypes.df16, src=(UPat.var("a"),)), lambda ctx,a: f"df16_log2({ctx[a]})"),
+    (UPat(Ops.SIN, dtype=dtypes.df16, src=(UPat.var("a"),)), lambda ctx,a: f"df32_to_df16(df32_sin(df16_to_df32({ctx[a]})))"),
     (UPat(Ops.ADD, dtype=dtypes.df32, src=(UPat.var("a"), UPat.var("b"))), lambda ctx,a,b: f"df32_add({ctx[a]},{ctx[b]})"),
     (UPat(Ops.SUB, dtype=dtypes.df32, src=(UPat.var("a"), UPat.var("b"))), lambda ctx,a,b: f"df32_sub({ctx[a]},{ctx[b]})"),
     (UPat(Ops.MUL, dtype=dtypes.df32, src=(UPat.var("a"), UPat.var("b"))), lambda ctx,a,b: f"df32_mul({ctx[a]},{ctx[b]})"),
@@ -444,6 +445,7 @@ class CUDARenderer(CStyleLanguage):
     (UPat(Ops.SQRT, dtype=dtypes.df32, src=(UPat.var("a"),)), lambda ctx,a: f"df32_sqrt({ctx[a]})"),
     (UPat(Ops.EXP2, dtype=dtypes.df32, src=(UPat.var("a"),)), lambda ctx,a: f"df32_exp2({ctx[a]})"),
     (UPat(Ops.LOG2, dtype=dtypes.df32, src=(UPat.var("a"),)), lambda ctx,a: f"df32_log2({ctx[a]})"),
+    (UPat(Ops.SIN, dtype=dtypes.df32, src=(UPat.var("a"),)), lambda ctx,a: f"df32_sin({ctx[a]})"),
     (UPat(Ops.MAX, dtype=dtypes.dfloats, src=(UPat.var("a"), UPat.var("b"))), lambda ctx,a,b: f"({ctx[a]}>{ctx[b]}?{ctx[a]}:{ctx[b]})"),
     (UPat(Ops.WHERE, dtype=dtypes.dfloats, src=(UPat.var("p"), UPat.var("a"), UPat.var("b"))), lambda ctx,p,a,b: f"({ctx[p]}?{ctx[a]}:{ctx[b]})"),
     (UPat(Ops.CAST, dtype=dtypes.df32, src=(UPat.var("a", dtypes.df16),)), lambda ctx,a: f"df16_to_df32({ctx[a]})"),
@@ -534,7 +536,17 @@ __device__ __forceinline__ df32 df32_exp2(df32 x){return df32_exp(df32_mul(x,297
 __device__ __forceinline__ df16 df16_log(df16 x){if(x<=0)return (-2147483647-1);int v=x,e=0;while(v>=131072){v/=2;++e;}while(v<65536){v*=2;--e;}df16 t=df16_div(df16_sub(v,65536),df16_add(v,65536)),t2=df16_mul(t,t),t3=df16_mul(t2,t),t5=df16_mul(t3,t2),s=df16_add(t,df16_add(df16_mul(t3,21845),df16_mul(t5,13107)));return df16_add(df16_add(s,s),df_sat_i32((df32)e*45426LL));}
 __device__ __forceinline__ df16 df16_log2(df16 x){return x<=0?(-2147483647-1):df16_div(df16_log(x),45426);}
 __device__ __forceinline__ df32 df32_log(df32 x){if(x<=0)return (-9223372036854775807LL-1LL);df32 v=x;int e=0;while(v>=8589934592LL){v/=2;++e;}while(v<4294967296LL){v*=2;--e;}df32 t=df32_div(df32_sub(v,4294967296LL),df32_add(v,4294967296LL)),t2=df32_mul(t,t),t3=df32_mul(t2,t),t5=df32_mul(t3,t2),s=df32_add(t,df32_add(df32_mul(t3,1431655765LL),df32_mul(t5,858993459LL)));return df32_add(df32_add(s,s),(df32)e*2977044472LL);}
-__device__ __forceinline__ df32 df32_log2(df32 x){return x<=0?(-9223372036854775807LL-1LL):df32_div(df32_log(x),2977044472LL);}''')
+__device__ __forceinline__ df32 df32_log2(df32 x){return x<=0?(-9223372036854775807LL-1LL):df32_div(df32_log(x),2977044472LL);}
+__device__ __constant__ df32 dft_sin_lut[32]={0LL,428781260LL,853278278LL,1269249623LL,1672539045LL,2059117009LL,2425120957LL,2766893898LL,3081020950LL,3364363459LL,3614090360LL,3827706465LL,4003077393LL,4138450894LL,4232474362LL,4284208345LL,4293135935LL,4259167929LL,4182643726LL,4064327929LL,3905402711LL,3707455999LL,3472465613LL,3202779499LL,2901092270LL,2570418286LL,2214061533LL,1835582609LL,1438763149LL,1027568045LL,606105819LL,178587585LL};
+__device__ __constant__ df32 dft_cos_lut[32]={4294967296LL,4273510349LL,4209353900LL,4103138977LL,3955926847LL,3769188403LL,3544789474LL,3284972181LL,2992332532LL,2669794485LL,2320580734LL,1948180507LL,1556314705LL,1148898721LL,730003320LL,303813968LL,-125410993LL,-553382889LL,-975825566LL,-1388518117LL,-1787337053LL,-2168297509LL,-2527593052LL,-2861633722LL,-3167081893LL,-3440885628LL,-3680309172LL,-3882960283LL,-4046814139LL,-4170233565LL,-4251985396LL,-4291252795LL};
+__device__ __forceinline__ df32 df32_sin_poly(df32 d){df32 d2=df32_mul(d,d),d3=df32_mul(d2,d),d5=df32_mul(d3,d2);return df32_add(d,df32_sub(df32_div(d5,515396075520LL),df32_div(d3,25769803776LL)));}
+__device__ __forceinline__ df32 df32_cos_poly(df32 d){df32 d2=df32_mul(d,d),d4=df32_mul(d2,d2);return df32_add(4294967296LL,df32_sub(df32_div(d4,103079215104LL),df32_div(d2,8589934592LL)));}
+__device__ __forceinline__ df32 df32_sin(df32 x){
+  const df32 pi=13493037705LL,two_pi=26986075409LL,step=429496730LL; x%=two_pi;if(x<0)x+=two_pi;bool neg=false;
+  if(x>pi){x=two_pi-x;neg=true;}df32 idx=(x+step/2)/step;if(idx>31)idx=31;df32 d=df32_sub(x,idx*step);
+  df32 r=df32_add(df32_mul(dft_sin_lut[idx],df32_cos_poly(d)),df32_mul(dft_cos_lut[idx],df32_sin_poly(d)));
+  if(r>4294967296LL)r=4294967296LL;if(r<(-4294967296LL))r=-4294967296LL;return neg?df32_neg(r):r;
+}''')
     if any(dt in dtypes.fp8s for dt, _ in used_dtypes): prefix.append("#include <cuda_fp8.h>")
     if any(dt == dtypes.half for dt, _ in used_dtypes): prefix.append("#include <cuda_fp16.h>")
     if any(dt == dtypes.bfloat16 for dt, _ in used_dtypes): prefix.append("#include <cuda_bf16.h>")

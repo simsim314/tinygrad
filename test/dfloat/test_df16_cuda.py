@@ -115,4 +115,9 @@ class TestDFloatCUDA(unittest.TestCase):
       self.assertEqual(bits16(x16.log2()),expected16)
       self.assertEqual(bits32(x32.log2()),expected32)
 
+  def test_deterministic_trig_raw_bits(self):
+    x=raw32([0,6746518852,13493037705,20239556557,26986075409,-6746518852,4294967296000])
+    self.assertEqual(bits32(x.sin()),[0,4294967296,12,-4294967296,0,-4294967296,3551420585])
+    self.assertEqual(bits32(x.cos()),[4294967296,0,-4294967296,13,4294967296,13,2415399732])
+
 if __name__ == "__main__": unittest.main()

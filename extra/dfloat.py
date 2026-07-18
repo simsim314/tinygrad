@@ -30,6 +30,20 @@ def df16_raw_bytes(t:Tensor) -> bytes:
 
 def df16_checksum(t:Tensor) -> str: return hashlib.sha256(df16_raw_bytes(t)).hexdigest()
 
+def precompute_freqs_cis_df16(dim:int,end:int,theta:float=10000.0,device:str|None=None) -> Tensor:
+  """Build a RoPE table using only Q31.32 integer arithmetic."""
+  if int(theta) != theta or theta <= 0: raise ValueError("deterministic RoPE currently requires a positive integer theta")
+  target=device or "CPU"
+  def raw32(values,shape=None):
+    out=Tensor(values,dtype=dtypes.int64,device=target).bitcast(dtypes.df32)
+    return out.reshape(shape) if shape is not None else out
+  base=raw32([int(theta)<<32])
+  exponents=raw32([i<<32 for i in range(0,dim,2)]) / raw32([dim<<32])
+  freqs=(-(base.log2()*exponents)).exp2()
+  positions=raw32([i<<32 for i in range(end)]).reshape(end,1)
+  angles=positions*freqs.reshape(1,dim//2)
+  return Tensor.stack(angles.cos(),angles.sin(),dim=-1).reshape(1,end,1,dim//2,2).cast(dtypes.df16).contiguous().realize()
+
 def convert_state_dict_df16(state:dict[str,Tensor], device:str|None=None) -> dict[str,Tensor]:
   ret, converted = {}, {}
   for name,t in state.items():

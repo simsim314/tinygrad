@@ -1,6 +1,6 @@
 import unittest
 from tinygrad import Tensor, dtypes
-from extra.dfloat import tensor_to_df16, df16_checksum, convert_state_dict_df16, convert_state_dict_storage, DF16Linear, DF16Embedding
+from extra.dfloat import tensor_to_df16, df16_checksum, convert_state_dict_df16, convert_state_dict_storage, precompute_freqs_cis_df16, DF16Linear, DF16Embedding
 
 class TestDFConvert(unittest.TestCase):
   def test_ieee_sources(self):
@@ -35,5 +35,14 @@ class TestDFConvert(unittest.TestCase):
                                    dtype=dtypes.float16,device="CUDA",verbose=True)
     self.assertIs(got["layers.0.a"],got["layers.0.b"])
     self.assertEqual(got["layers.1.a"].dtype,dtypes.float16)
+
+  def test_integer_only_rope_table(self):
+    expected=[[[65536,0],[65536,0],[65536,0],[65536,0]],
+              [[35409,55147],[65209,6541],[65533,655],[65536,66]],
+              [[-27273,59592],[64230,13017],[65523,1311],[65536,131]],
+              [[-64880,9248],[62610,19364],[65507,1966],[65536,197]]]
+    for _ in range(3):
+      got=precompute_freqs_cis_df16(8,4,10000,"CUDA").bitcast(dtypes.int32).numpy().reshape(4,4,2).tolist()
+      self.assertEqual(got,expected)
 
 if __name__ == "__main__": unittest.main()

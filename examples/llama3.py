@@ -227,10 +227,11 @@ def build_transformer(model_path: Path, model_size="8B", quantize=None, scale_dt
       weights = convert_from_gguf(weights, MODEL_PARAMS[model_size]["args"]["n_layers"])
     weights = fix_bf16(weights)
     if dfloat:
-      from extra.dfloat import convert_state_dict_storage
+      from extra.dfloat import convert_state_dict_storage, precompute_freqs_cis_df16
       target=device or Device.DEFAULT
       weights=convert_state_dict_storage(weights,dtype=dtypes.float16,device=target,verbose=True)
-      model.freqs_cis=model.freqs_cis.cast(dtypes.float16).to(target).realize()
+      head_dim=MODEL_PARAMS[model_size]["args"]["dim"]//MODEL_PARAMS[model_size]["args"]["n_heads"]
+      model.freqs_cis=precompute_freqs_cis_df16(head_dim,max_context*2,MODEL_PARAMS[model_size]["args"]["rope_theta"],target)
 
     with Context(BEAM=0):
       # quantize

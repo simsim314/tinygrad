@@ -17,7 +17,7 @@ class TestDFRenderer(unittest.TestCase):
     r=CUDARenderer(Target(device="CUDA", renderer="CUDA", arch="sm_61", interface="MOCK"))
     a=UOp.const(dtypes.df16,1.0)
     with self.assertRaisesRegex(RuntimeError, "native floating fallback is forbidden"):
-      r.render([a,UOp(Ops.SIN,dtypes.df16,(a,))])
+      r.render([a,UOp(Ops.TRUNC,dtypes.df16,(a,))])
 
   def test_exp2_uses_integer_lut_helper(self):
     r=CUDARenderer(Target(device="CUDA", renderer="CUDA", arch="sm_61", interface="MOCK"))

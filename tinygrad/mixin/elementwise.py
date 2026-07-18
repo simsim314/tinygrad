@@ -493,6 +493,10 @@ class ElementwiseMixin(CreationMixin):
     print(Tensor([0., math.pi/2, math.pi, 3*math.pi/2, 2*math.pi]).cos().numpy())
     ```
     """
+    if dtypes.is_dfloat(self.dtype):
+      # Exact binary64 spelling of the pinned Q31.32 half-pi constant
+      # 6746518852 / 2^32; SIN itself performs integer range reduction.
+      return (self.const_like(1.5707963267341256)-self).sin()
     if self.is_floating_point(): return ((math.pi/2)-self.cast(least_upper_dtype(self.dtype, dtypes.float32))).sin().cast(self.dtype)
     return ((math.pi/2)-self).sin()
 
